@@ -53,8 +53,8 @@ parser.add_argument("--warmup", default=10000, type=int,
                     help="Number of steps to warmup for.")
 parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
-parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
-                    metavar='W', help='weight decay (default: 1e-4)',
+parser.add_argument('--wd', '--weight-decay', default=0.1, type=float,
+                    metavar='W', help='weight decay (default: 0.1)',
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
@@ -168,6 +168,10 @@ def is_master(args):
     return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % arg.ngpus_per_node == 0)
 
 
+def weight_decay_param(n, p):
+    return p.ndim >= 2 and n.endswith('weight')
+
+
 def main_worker(gpu, args):
     global best_acc1
     args.gpu = gpu
@@ -193,6 +197,9 @@ def main_worker(gpu, args):
         hidden_dim=384,
         mlp_dim=1536,
     ).bfloat16()
+
+    wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
+    non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
 
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
         print('using CPU, this will be slow')
@@ -236,7 +243,13 @@ def main_worker(gpu, args):
         device = torch.device("cpu")
     
     criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": wd_params, "weight_decay": args.weight_decay},
+            {"params": non_wd_params, "weight_decay": 0.},
+        ],
+        lr=args.lr,
+    )
 
     # Data loading code
     if args.dummy:

@@ -45,6 +45,11 @@ class EncoderBlock(nn.Module):
         self.ln_2 = norm_layer(hidden_dim)
         self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout)
 
+        # Fix init discrepancy between nn.MultiheadAttention and that of big_vision
+        bound = math.sqrt(3 / hidden_dim)
+        nn.init.uniform_(self.self_attention.in_proj_weight, -bound, bound)
+        nn.init.uniform_(self.self_attention.out_proj.weight, -bound, bound)
+
     def forward(self, input: torch.Tensor):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
         x = self.ln_1(input)
@@ -153,7 +158,9 @@ class SimpleVisionTransformer(nn.Module):
         if isinstance(self.conv_proj, nn.Conv2d):
             # Init the patchify stem
             fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1]
-            nn.init.trunc_normal_(self.conv_proj.weight, std=math.sqrt(1 / fan_in))
+            # constant is stddev of standard normal truncated to (-2, 2)
+            std = math.sqrt(1 / fan_in) / .87962566103423978
+            nn.init.trunc_normal_(self.conv_proj.weight, std=std, a=-2 * std, b=2 * std)
             if self.conv_proj.bias is not None:
                 nn.init.zeros_(self.conv_proj.bias)
         elif self.conv_proj.conv_last is not None and isinstance(self.conv_proj.conv_last, nn.Conv2d):
