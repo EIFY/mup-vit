@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import math
 import random
 import shutil
 import time
@@ -33,6 +34,9 @@ from simple_vit import SimpleVisionTransformer
 
 import wandb
 
+# "(...)/python3.10/site-packages/torch/_inductor/compile_fx.py:140: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance."
+torch.set_float32_matmul_precision('high')
+
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
                     help='path to dataset (default: imagenet)')
@@ -40,8 +44,10 @@ parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
-                    help='manual epoch number (useful on restarts)')
+parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
+                    help='eval and log every N steps')
+parser.add_argument('--start-step', default=0, type=int, metavar='N',
+                    help='manual step number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=256, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
@@ -196,7 +202,7 @@ def main_worker(gpu, args):
         num_heads=6,
         hidden_dim=384,
         mlp_dim=1536,
-    ).bfloat16()
+    )
 
     wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
     non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
@@ -255,9 +261,9 @@ def main_worker(gpu, args):
     if args.dummy:
         print("=> Dummy data is used!")
         train_dataset = datasets.FakeData(1281167, (3, 224, 224), 1000,
-            v2.ToDtype(torch.bfloat16, scale=True))
+            v2.ToDtype(torch.float32, scale=True))
         val_dataset = datasets.FakeData(50000, (3, 224, 224), 1000,
-            v2.ToDtype(torch.bfloat16, scale=True))
+            v2.ToDtype(torch.float32, scale=True))
     else:
         value_range = v2.Normalize(
             mean=[0.5] * 3,
@@ -268,26 +274,33 @@ def main_worker(gpu, args):
             split='train',
             transform=v2.Compose([
                 v2.ToImage(),
-                v2.RandomResizedCrop(224, antialias=False),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.RandomResizedCrop(224, scale=(0.05, 1.0), antialias=False),
                 v2.RandomHorizontalFlip(),
                 v2.RandAugment(2, 10),
-                v2.ToDtype(torch.bfloat16, scale=True),
                 value_range,
             ]))
+
+        class ResizeArea(nn.Module):
+            def forward(self, img):
+                img = img.unsqueeze(0)
+                img = nn.functional.interpolate(img, size=(256, 256), mode='area')
+                img = img.squeeze(0)
+                return img
 
         val_dataset = datasets.ImageNet(
             args.data,
             split='val',
             transform=v2.Compose([
                 v2.ToImage(),
-                v2.Resize(256, antialias=False),
+                v2.ToDtype(torch.float32, scale=True),
+                ResizeArea(),
                 v2.CenterCrop(224),
-                v2.ToDtype(torch.bfloat16, scale=True),
                 value_range,
             ]))
 
     n = len(train_dataset)
-    steps_per_epoch = n // args.batch_size
+    total_steps = round(n * args.epochs / args.batch_size)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -307,8 +320,8 @@ def main_worker(gpu, args):
         val_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
-    warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1 / args.warmup, total_iters=args.warmup)
-    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * steps_per_epoch - args.warmup)
+    warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
 
     # optionally resume from a checkpoint
@@ -321,7 +334,7 @@ def main_worker(gpu, args):
                 # Map model to be loaded to specified single gpu.
                 loc = 'cuda:{}'.format(args.gpu)
                 checkpoint = torch.load(args.resume, map_location=loc)
-            args.start_epoch = checkpoint['epoch']
+            args.start_step = checkpoint['step']
             best_acc1 = checkpoint['best_acc1']
             if args.gpu is not None:
                 # best_acc1 may be from a checkpoint from a different GPU
@@ -329,8 +342,8 @@ def main_worker(gpu, args):
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
+            print("=> loaded checkpoint '{}' (step {})"
+                  .format(args.resume, checkpoint['step']))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
@@ -358,47 +371,32 @@ def main_worker(gpu, args):
         # evaluate on validation set.
         # I got RuntimeError: Found a custom (non-ATen) operator that either mutates or its inputs: aten::record_stream..
         # if I use the compiled model, so for now I pass in original_model instead.
-        validate(val_loader, original_model, criterion, args.start_epoch, steps_per_epoch, args)
+        validate(val_loader, original_model, criterion, 0, args)
         return
 
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
-
-        # train for one epoch
-        train(train_loader, model, criterion, optimizer, scheduler, epoch, device, args)
-        acc1 = validate(val_loader, original_model, criterion, epoch, steps_per_epoch, args)
-                
-        # remember best acc@1 and save checkpoint
-        is_best = acc1 > best_acc1
-        best_acc1 = max(acc1, best_acc1)
-
-        if is_master(args):
-            save_checkpoint({
-                'epoch': epoch,
-                'state_dict': original_model.state_dict(),
-                'best_acc1': best_acc1,
-                'optimizer' : optimizer.state_dict(),
-                'scheduler' : scheduler.state_dict()
-            }, is_best, args.checkpoint_path)
+    train(train_loader, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args)
 
 
-def train(train_loader, model, criterion, optimizer, scheduler, epoch, device, args):
+def train(train_loader, val_loader, start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
     top5 = AverageMeter('Acc@5', ':6.2f')
     progress = ProgressMeter(
-        len(train_loader),
-        [batch_time, data_time, losses, top1, top5],
-        prefix="Epoch: [{}]".format(epoch))
+        total_steps,
+        [batch_time, data_time, losses, top1, top5])
 
     # switch to train mode
     model.train()
-
     end = time.time()
-    for i, (images, target) in enumerate(train_loader):
+    best_acc1 = 0
+
+    def infinite_loader():
+        while True:
+            yield from train_loader
+
+    for step, (images, target) in zip(range(start_step + 1, total_steps + 1), infinite_loader()):
         # measure data loading time
         data_time.update(time.time() - end)
 
@@ -430,7 +428,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, device, a
         top5.update(step_acc5, images.size(0))
 
         # do SGD step
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad()
 
@@ -438,9 +436,13 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, device, a
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if i % args.print_freq == 0:
-            progress.display(i)                
+        if step % args.print_freq == 0:
+            progress.display(step)
             if args.wandb and is_master(args):
+
+                with torch.no_grad():
+                    l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
+
                 samples_per_second_per_gpu = args.batch_size / batch_time.val
                 samples_per_second = samples_per_second_per_gpu * args.world_size
                 log_data = {
@@ -451,15 +453,33 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, device, a
                     "batch_time": batch_time.val,
                     "samples_per_second": samples_per_second,
                     "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                    "lr": scheduler.get_last_lr()[0]
+                    "lr": scheduler.get_last_lr()[0],
+                    "l2_grads": l2_grads.item(),
+                    "l2_params": math.sqrt(l2_params)
                 }
-                step = epoch * len(train_loader) + i
                 wandb.log(log_data, step=step)
+
+        if step % args.log_steps == 0 or step == total_steps:
+
+            acc1 = validate(val_loader, original_model, criterion, step, args)
+
+            # remember best acc@1 and save checkpoint
+            is_best = acc1 > best_acc1
+            best_acc1 = max(acc1, best_acc1)
+
+            if is_master(args):
+                save_checkpoint({
+                    'step': step,
+                    'state_dict': original_model.state_dict(),
+                    'best_acc1': best_acc1,
+                    'optimizer' : optimizer.state_dict(),
+                    'scheduler' : scheduler.state_dict()
+                }, is_best, args.checkpoint_path)
 
         scheduler.step()
 
 
-def validate(val_loader, model, criterion, epoch, steps_per_epoch, args):
+def validate(val_loader, model, criterion, step, args):
 
     def run_validate(loader, base_progress=0):
         with torch.no_grad():
@@ -522,12 +542,11 @@ def validate(val_loader, model, criterion, epoch, steps_per_epoch, args):
 
     if args.wandb and is_master(args):        
         log_data = {
-            'epoch': epoch,
             'val/loss': losses.avg,
             'val/acc@1': top1.avg,
             'val/acc@5': top5.avg,
         }
-        wandb.log(log_data, step=(epoch + 1) * steps_per_epoch)
+        wandb.log(log_data, step=step)
 
     return top1.avg
 
@@ -635,7 +654,7 @@ def accuracy(output, target, topk=(1,), class_prob=False):
         res = []
         for k in topk:
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
+            res.append(correct_k.mul_(1.0 / batch_size))
         return res
 
 
