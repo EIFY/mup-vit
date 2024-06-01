@@ -274,28 +274,21 @@ def main_worker(gpu, args):
             split='train',
             transform=v2.Compose([
                 v2.ToImage(),
-                v2.ToDtype(torch.float32, scale=True),
-                v2.RandomResizedCrop(224, scale=(0.05, 1.0), antialias=False),
+                v2.RandomResizedCrop(224, antialias=False),
                 v2.RandomHorizontalFlip(),
                 v2.RandAugment(2, 10),
+                v2.ToDtype(torch.float32, scale=True),
                 value_range,
             ]))
-
-        class ResizeArea(nn.Module):
-            def forward(self, img):
-                img = img.unsqueeze(0)
-                img = nn.functional.interpolate(img, size=(256, 256), mode='area')
-                img = img.squeeze(0)
-                return img
 
         val_dataset = datasets.ImageNet(
             args.data,
             split='val',
             transform=v2.Compose([
                 v2.ToImage(),
-                v2.ToDtype(torch.float32, scale=True),
-                ResizeArea(),
+                v2.Resize(256, antialias=False),
                 v2.CenterCrop(224),
+                v2.ToDtype(torch.float32, scale=True),
                 value_range,
             ]))
 
