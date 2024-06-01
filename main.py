@@ -364,7 +364,7 @@ def main_worker(gpu, args):
         # evaluate on validation set.
         # I got RuntimeError: Found a custom (non-ATen) operator that either mutates or its inputs: aten::record_stream..
         # if I use the compiled model, so for now I pass in original_model instead.
-        validate(val_loader, original_model, criterion, 0, args)
+        validate(val_loader, original_model, criterion, args.start_step, args)
         return
 
     train(train_loader, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args)
