@@ -32,3 +32,12 @@ has 1281167 training images, so 1024 batch size results in `1281167 // 1024 = 12
 model epoch by epoch: Instead, it makes the dataset iterator infinite and trains for the equivalent number of steps. Furthermore, [it `round()` the number of
 steps](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/utils.py#L1014) instead of dropping the last.
 The 90-epoch equivalent therefore would be `round(1281167 / 1024 * 90) = 112603` steps and `mup-vit` `main` follows this practice.
+
+## Warmup
+big_vision [warms up from 0 learning rate](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/utils.py#L1082)
+but [`torch.optim.lr_scheduler.LinearLR()` disallows starting from 0 learning rate](https://github.com/pytorch/pytorch/blob/e62073d7997c9e63896cb5289ffd0874a8cc1838/torch/optim/lr_scheduler.py#L736).
+I implemented warming up from 0 learning rate with [`torch.optim.lr_scheduler.LambdaLR()`](https://github.com/EIFY/mup-vit/blob/425cd9ac039367dbd96e2015f8d387e5958af998/main.py#L348) instead.
+
+## Weight decay
+In big_vision `config.wd` is only scaled by the global LR scheduling, but for `torch.optim.AdamW()` "`weight_decay`" is [first multiplied by the LR](https://fabian-sp.github.io/posts/2024/02/decoupling/).
+The correct equivalent value for `weight_decay` is therefore `0.1` to match `config.lr = 0.001` and `config.wd = 0.0001`.
