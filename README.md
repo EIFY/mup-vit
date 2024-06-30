@@ -11,3 +11,16 @@ In [Better plain ViT baselines for ImageNet-1k](https://arxiv.org/abs/2205.01580
 remaining 1% is used for minival "to encourage the community to stop selecting design choices on the validation (de-facto test) set". This however is
 difficult to reproduce with `torchvision.datasets` since `datasets.ImageNet()` is ordered by the class label, unlike [tdfs](https://www.tensorflow.org/datasets/overview)
 where the ordering is somewhat randomized:
+
+```python
+import tensorflow_datasets as tfds
+ds = tfds.builder('imagenet2012').as_dataset(split='train[99%:]')
+from collections import Counter
+c = Counter(int(e['label']) for e in ds)
+>>> len(c)
+999
+>>> max(c.values())
+27
+>>> min(c.values())
+3
+```
