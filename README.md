@@ -41,3 +41,19 @@ I implemented warming up from 0 learning rate with [`torch.optim.lr_scheduler.La
 ## Weight decay
 In big_vision `config.wd` is only scaled by the global LR scheduling, but for `torch.optim.AdamW()` "`weight_decay`" is [first multiplied by the LR](https://fabian-sp.github.io/posts/2024/02/decoupling/).
 The correct equivalent value for `weight_decay` is therefore `0.1` to match `config.lr = 0.001` and `config.wd = 0.0001`.
+
+## Model
+The simplified ViT described in [Better plain ViT baselines for ImageNet-1k](https://arxiv.org/abs/2205.01580) is not readily available in pytorch. E.g.
+[vit_pytorch](https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/)'s [simple_vit](https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/simple_vit.py)
+and [simple_flash_attn_vit](https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/simple_flash_attn_vit.py) are rather dated without
+taking advantage of [`torch.nn.MultiheadAttention()`](https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html), so I rolled my own.
+I have to fix some of the parameter initialization, however:
+
+1. `torch.nn.MultiheadAttention()` comes with its own issues. When QKV are of the same dimension, their projection matrices are combined into
+`self.in_proj_weight` whose initial values are [set with `xavier_uniform_()`](https://github.com/pytorch/pytorch/blob/e62073d7997c9e63896cb5289ffd0874a8cc1838/torch/nn/modules/activation.py#L1074).
+Likely unintentionally, this means that the values are sampled from uniform distribution U(−a,a) where a = sqrt(3 / (2 * hidden_dim)) instead sqrt(3 / hidden_dim).
+Furthermore, the output projection is [initialized as `NonDynamicallyQuantizableLinear()`](https://github.com/pytorch/pytorch/blob/e62073d7997c9e63896cb5289ffd0874a8cc1838/torch/nn/modules/activation.py#L1097)
+[whose initial values are sampled from U(-sqrt(k), sqrt(k)), k = 1 / hidden_dim](https://pytorch.org/docs/stable/generated/torch.nn.Linear.html).
+Both are therefore re-initialized with U(−a,a) where a = sqrt(3 / hidden_dim) to conform with the [`jax.nn.initializers.xavier_uniform()`
+used by the reference ViT from big_vision](https://github.com/google-research/big_vision/blob/ec86e4da0f4e9e02574acdead5bd27e282013ff1/big_vision/models/vit.py#L93).
+2. pytorch's own `nn.init.trunc_normal_()` doesn't take the effect of truncation on stddev into account, so I used [the magic factor](https://github.com/google/jax/blob/1949691daabe815f4b098253609dc4912b3d61d8/jax/_src/nn/initializers.py#L334) from the JAX repo to re-initialize the patchifying `nn.Conv2d`.
