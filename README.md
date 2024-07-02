@@ -82,3 +82,18 @@ Here is the spectrum of torchvision `RandAugment(2, 10, fill=[128] * 3)`. We can
 And here is the spectrum of big_vision `randaug(2, 10)`:
 
 ![big_vision_randaugment_2_10](https://github.com/EIFY/mup-vit/assets/2584418/97e74d75-7002-4be1-888d-2aa8ae3d1e51)
+
+Digging into the codebase, we can see that while torchvision's `v2.RandAugment()` sticks with the original [14-transform lineup](https://github.com/pytorch/vision/blob/bf01bab6125c5f1152e4f336b470399e52a8559d/torchvision/transforms/v2/_auto_augment.py#L375) of [RandAugment: Practical automated data augmentation with a reduced search space](https://arxiv.org/abs/1909.13719), big_vision's own `randaug()` omits the `Identity` no-op and adds 3 new transforms `Invert`, `SolarizeAdd`, and `Cutout`, along with other subtler discrepancies (e.g. `Sharpness` is considered "signed" in torchvision so half of the time the transform blurs the image instead, while in big_vision it always sharpens the image). What I did then is to [subclass torchvision's `v2.RandAugment()`](notebooks/RandAugmentCalibration.ipynb), remove & add transforms accordingly, and use a variety of calibration grids to make sure that they are within ±1 of the RGB values given by the big_vision's counterpart. The sole exception is `Contrast`: more on that later. Even with that exception, the near-replication of big_vision's `randaug(2, 10)` results in near-identical spectrum:
+
+![torch_vision_randaugment17_2_10](https://github.com/EIFY/mup-vit/assets/2584418/692bf214-87c0-442e-807c-98181f2efc62)
+
+Training with the near-replication of big_vision `randaug(2, 10)` for 90 epoches reached 77.27% top-1 validation set accuracy and the gradient L2 norm looks the same, but the loss curve still differs:
+
+[<img width="1074" alt="Screenshot 2024-07-02 at 1 43 47 PM" src="https://github.com/EIFY/mup-vit/assets/2584418/50fe571b-cba8-40f3-aef3-a63c3e7c65d2">](https://api.wandb.ai/links/eify/8d0wix47)
+
+[<img width="1074" alt="Screenshot 2024-07-02 at 1 45 30 PM" src="https://github.com/EIFY/mup-vit/assets/2584418/489a3193-1c91-4045-ba02-d6e25420625c">](https://api.wandb.ai/links/eify/8d0wix47)
+
+There is no more to be done on the pytorch side, however. Let's turn our attention to big_vision itself.
+
+# `big_vision` [`grad_accum_wandb`](https://github.com/EIFY/big_vision/tree/grad_accum_wandb) branch
+I first bolted on `wandb` logging and revived `utils.accumulate_gradient()` to run 1024 batch size on my GeForce RTX 3080 Laptop GPU. TensorBook is unable to handle `shuffle_buffer_size = 250_000` so I shrank it to `150_000`. Finally, I fell back to training on 100% of the training data to converge to what I had to do with pytorch. This resulted in 76.74% top-1 validation set accuracy `big-vision-repo-attempt` referenced above and consistent with the reported 76.7% top-1 validation set accuracy.
