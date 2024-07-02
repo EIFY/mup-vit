@@ -62,3 +62,6 @@ After 1 and 2 all of the summary statistics of the model parameters match that o
 
 ## Data preprocessing and augmentation
 Torchvision [`v2.RandomResizedCrop()` defaults to cropping 8%-100%](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.RandomResizedCrop.html) of the area of the image whereas big_vision `decode_jpeg_and_inception_crop()` [defaults to 5%-100%](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L199). Torchvision transforms of [v2.RandAugment() default to zero paddling](https://pytorch.org/vision/main/generated/torchvision.transforms.RandAugment.html) whereas big_vision `randaug()` [uses RGB values (128, 128, 128)](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/autoaugment.py#L676) as the replacement value. In both cases I have specified the latter to conform to the reference implementation.
+Model trained with all of the above for 90 epoches reached 76.91% top-1 validation set accuracy, but the loss curve and the gradient L2 norm clearly show that it deviates from the reference:
+
+[<img width="1074" alt="Screenshot 2024-07-01 at 10 28 58 PM" src="https://github.com/EIFY/mup-vit/assets/2584418/80ce12d5-8cae-4729-8556-a146fd351e83">](https://api.wandb.ai/links/eify/5l4dv2p8)
