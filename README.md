@@ -57,3 +57,8 @@ Furthermore, the output projection is [initialized as `NonDynamicallyQuantizable
 Both are therefore re-initialized with U(−a,a) where a = sqrt(3 / hidden_dim) to conform with the [`jax.nn.initializers.xavier_uniform()`
 used by the reference ViT from big_vision](https://github.com/google-research/big_vision/blob/ec86e4da0f4e9e02574acdead5bd27e282013ff1/big_vision/models/vit.py#L93).
 2. pytorch's own `nn.init.trunc_normal_()` doesn't take the effect of truncation on stddev into account, so I used [the magic factor](https://github.com/google/jax/blob/1949691daabe815f4b098253609dc4912b3d61d8/jax/_src/nn/initializers.py#L334) from the JAX repo to re-initialize the patchifying `nn.Conv2d`.
+
+After 1 and 2 all of the summary statistics of the model parameters match that of the reference implementation at initialization.
+
+## Data preprocessing and augmentation
+Torchvision [`v2.RandomResizedCrop()` defaults to cropping 8%-100%](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.RandomResizedCrop.html) of the area of the image whereas big_vision `decode_jpeg_and_inception_crop()` [defaults to 5%-100%](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L199). Torchvision transforms of [v2.RandAugment() default to zero paddling](https://pytorch.org/vision/main/generated/torchvision.transforms.RandAugment.html) whereas big_vision `randaug()` [uses RGB values (128, 128, 128)](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/autoaugment.py#L676) as the replacement value. In both cases I have specified the latter to conform to the reference implementation.
