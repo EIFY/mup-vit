@@ -129,3 +129,6 @@ vs. the output after the fix:
 ![download (12)](https://github.com/EIFY/mup-vit/assets/2584418/9224b72b-7100-402b-80d8-8b032e731816)
 
 Some CV people are aware of this bug ([1](https://x.com/giffmana/status/1798978504689938560), [2](https://x.com/wightmanr/status/1799170879697686897)) but AFAIK it wasn't documented anywhere in the public. As an aside, [`solarize()` transform has its own integer overflow bug](https://github.com/google-research/big_vision/issues/110) but just happens to have no effect when `magnitude=_MAX_LEVEL` here.
+
+## Inconsistent anti-aliasing between training vs. validation
+`decode_jpeg_and_inception_crop()` used by the training data pipeline defaults to [bilinear interpolation without anti-aliasing](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L201) for resizing, but `resize_small()` used by the validation data pipeline defaults to [area interpolation](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L108) that ["always anti-aliases"](https://www.tensorflow.org/api_docs/python/tf/image/resize). Furthermore, torchvision doesn't support resizing with area interpolation. For consistency, I changed both to bilinear interpolation with anti-aliasing.
