@@ -97,3 +97,35 @@ There is no more to be done on the pytorch side, however. Let's turn our attenti
 
 # `big_vision` [`grad_accum_wandb`](https://github.com/EIFY/big_vision/tree/grad_accum_wandb) branch
 I first bolted on `wandb` logging and revived `utils.accumulate_gradient()` to run 1024 batch size on my GeForce RTX 3080 Laptop GPU. TensorBook is unable to handle `shuffle_buffer_size = 250_000` so I shrank it to `150_000`. Finally, I fell back to training on 100% of the training data to converge to what I had to do with pytorch. This resulted in 76.74% top-1 validation set accuracy `big-vision-repo-attempt` referenced above and consistent with the reported 76.7% top-1 validation set accuracy.
+
+## `contrast()` transform
+It turned out that one of big_vision's `randaug()` transforms, `contrast()`, [is broken](https://github.com/google-research/big_vision/issues/109). In short, what meant to calculate the average grayscale of the image
+```python
+  # Compute the grayscale histogram, then compute the mean pixel value,
+  # and create a constant image size of that value.  Use that as the
+  # blending degenerate target of the original image.
+  hist = tf.histogram_fixed_width(degenerate, [0, 255], nbins=256)
+  mean = tf.reduce_sum(tf.cast(hist, tf.float32)) / 256.0
+```
+is instead calculating image_area / 256, so in our case of 224 × 224 image, mean is always 196. What it should do is the following:
+```python
+  # Compute the grayscale histogram, then compute the mean pixel value,
+  # and create a constant image size of that value.  Use that as the
+  # blending degenerate target of the original image.
+  hist = tf.histogram_fixed_width(degenerate, [0, 255], nbins=256)
+  mean = tf.reduce_sum(
+      tf.cast(hist, tf.float32) * tf.linspace(0., 255., 256)) / float(image_height * image_width)
+```
+We can visualize this bug by using the following calibration grid as the input:
+
+![download (8)](https://github.com/EIFY/mup-vit/assets/2584418/d53438b8-0b9b-4dd4-8c60-7c2aa3aaa790)
+
+and compare the output given by the broken `contrast()`:
+
+![download (11)](https://github.com/EIFY/mup-vit/assets/2584418/23eccaa7-069f-44d5-9406-88132fbac5c3)
+
+vs. the output after the fix:
+
+![download (12)](https://github.com/EIFY/mup-vit/assets/2584418/9224b72b-7100-402b-80d8-8b032e731816)
+
+Some CV people are aware of this bug ([1](https://x.com/giffmana/status/1798978504689938560), [2](https://x.com/wightmanr/status/1799170879697686897)) but AFAIK it wasn't documented anywhere in the public. As an aside, [`solarize()` transform has its own integer overflow bug](https://github.com/google-research/big_vision/issues/110) but just happens to have no effect when `magnitude=_MAX_LEVEL` here.
