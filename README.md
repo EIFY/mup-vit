@@ -143,3 +143,18 @@ Changing all of the above seems to have [no apparent effect on the model](https:
 
 ## Shuffle buffer size
 Finally, back to `shuffle_buffer_size`. Unlike `torch.utils.data.DataLoader(shuffle=True)` which always fully shuffle by indices, [`tf.data.Dataset.shuffle(buffer_size)`](https://www.tensorflow.org/api_docs/python/tf/data/Dataset#shuffle) needs to load `buffer_size`'s worth of training examples into the main memory and fully shuffle iff `buffer_size=dataset.cardinality()`. To test whether incomplete shuffle so far has hurt performance, I launched a 8x A100-SXM4-40GB instance on [Lambda](https://lambdalabs.com/) and trained a big_vision model on it with all of the above and `config.input.shuffle_buffer_size = 1281167`, size of the ImageNet-1k training set. It still has [no apparent effect](https://api.wandb.ai/links/eify/huigfbka) (76.85% top-1 validation set accuracy).
+
+As a by-product, this also proves that big_vision gradient accumulation and multi-GPU training are fully equivalent.
+
+# Conclusions
+I have run out of candidate causes of discrepancies to investigate. Can it be just due to randomness? While the discrepancy between the top-1 validation set accuracy is small (77.27% vs. 76.7%-76.87%), the loss curves suggest that it's real. Furthermore, I have trained a model by [grafting the pytorch model/optimizer/scheduler on the big_vision data pipelines](https://github.com/EIFY/big_vision/tree/grafted) and it clocked at [76.38% top-1 validation set accuracy](https://wandb.ai/eify/mup-vit/reports/torch-on-big-vision-input3--Vmlldzo4NTMzMTU4). If we believe that it behaves the same as the big_vision models on the big_vision data pipelines, the discrepancy can be up to +0.9%. I am therefore opening up the results here for new ideas and further investigation.
+
+*Postscript*: Metrics of the models aside, in terms of training walltime, modern (2.2+) PyTorch with compile() and JAX are [nearly identical on the same GPU](https://api.wandb.ai/links/eify/rprx0dqy). The tiny difference may well be fully-explained by the overhead of transposing from channels-last to channels-first and from `tf.Tensor` to `torch.Tensor`. As for hardware comparison, here are the walltime comparison:
+
+| Hardware | Walltime |
+| --- | --- |
+| TPUv3-8 node | 6h30 (99%) |
+| 8x A100-SXM4-40GB | 5h41m |
+| RTX 3080 Laptop | 5d19h32m |
+
+8x A100-SXM4-40GB is comparable but faster than a TPUv3-8 node. RTX 3080 Laptop is unsurprisingly out of the league: 1 day on it is about the same as 1 hour on the other two.
