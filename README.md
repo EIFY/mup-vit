@@ -61,7 +61,24 @@ used by the reference ViT from big_vision](https://github.com/google-research/bi
 After 1 and 2 all of the summary statistics of the model parameters match that of the reference implementation at initialization.
 
 ## Data preprocessing and augmentation
-Torchvision [`v2.RandomResizedCrop()` defaults to cropping 8%-100%](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.RandomResizedCrop.html) of the area of the image whereas big_vision `decode_jpeg_and_inception_crop()` [defaults to 5%-100%](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L199). Torchvision transforms of [v2.RandAugment() default to zero paddling](https://pytorch.org/vision/main/generated/torchvision.transforms.RandAugment.html) whereas big_vision `randaug()` [uses RGB values (128, 128, 128)](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/autoaugment.py#L676) as the replacement value. In both cases I have specified the latter to conform to the reference implementation.
+Torchvision [`v2.RandomResizedCrop()` defaults to cropping 8%-100%](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.RandomResizedCrop.html) of the area of the image whereas big_vision `decode_jpeg_and_inception_crop()` [defaults to 5%-100%](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L199). Torchvision transforms of [v2.RandAugment() default to zero padding](https://pytorch.org/vision/main/generated/torchvision.transforms.RandAugment.html) whereas big_vision `randaug()` [uses RGB values (128, 128, 128)](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/autoaugment.py#L676) as the replacement value. In both cases I have specified the latter to conform to the reference implementation.
 Model trained with all of the above for 90 epoches reached 76.91% top-1 validation set accuracy, but the loss curve and the gradient L2 norm clearly show that it deviates from the reference:
 
 [<img width="1074" alt="Screenshot 2024-07-01 at 10 28 58 PM" src="https://github.com/EIFY/mup-vit/assets/2584418/80ce12d5-8cae-4729-8556-a146fd351e83">](https://api.wandb.ai/links/eify/5l4dv2p8)
+
+It turned out that `RandAugment(num_ops=2, magnitude=10)` means very different things in torchvision vs. big_vision. I created the following 224 × 224 black & white calibration grid consists of 56 × 56 black & white squares:
+
+![calibration_grid](https://github.com/EIFY/mup-vit/assets/2584418/d1da19c1-9c45-4e8a-b40e-c028ee2cf0af)
+
+and [applied both versions of `RandAugment(2, 10)` 100000 times](notebooks/RandAugmentOnCalibrationGrid.ipynb) to gather the stats. All of the resulting pixels remain colorless
+(i.e. for RGB values (r, g, b) r == g == b remains true) so we can sort them [from black to white into a spectrum](notebooks/GradientVisual.ipynb). For the following 2000 × 200 spectra, pixels are sorted top-down, left-right, and each pixel represents 224 * 224 * 100000 / (2000 * 200) = 112 * 112 pixels of the aggregated output, i.e. 1/4 of one output image. In case one batch of 12544 pixels happens to be of different values, I took the average. Here is the spectrum of torchvision `RandAugment(2, 10)`:
+
+![torch_vision_randaugment_2_10](https://github.com/EIFY/mup-vit/assets/2584418/2b2cdd14-9ae6-49f9-8e9f-f5958a14c14e)
+
+Here is the spectrum of torchvision `RandAugment(2, 10, fill=[128] * 3)`. We can see that it just shifts the zero-padding part of the black into the (128, 128, 128) gray:
+
+![torch_vision_randaugment_2_10_mid_fill](https://github.com/EIFY/mup-vit/assets/2584418/1c3a0129-f48f-47c4-9f5e-00eb4ea2d57a)
+
+And here is the spectrum of big_vision `randaug(2, 10)`:
+
+![big_vision_randaugment_2_10](https://github.com/EIFY/mup-vit/assets/2584418/97e74d75-7002-4be1-888d-2aa8ae3d1e51)
