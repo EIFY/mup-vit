@@ -96,7 +96,8 @@ parser.add_argument("--report-to", default='', type=str,
                     help="Options are ['wandb']")
 parser.add_argument("--wandb-notes", default='', type=str,
                     help="Notes if logging with wandb")
-parser.add_argument('--curriculum', action='store_true', help="use fake data to benchmark")
+parser.add_argument('--curriculum', action='store_true', help="use curriculum learning")
+parser.add_argument('--only', action='store_true', help="only use transforms that take magnitude as a parameter")
 best_acc1 = 0
 
 
@@ -317,12 +318,14 @@ def main_worker(gpu, args):
                 False,
             ),
             "Solarize": (lambda num_bins, height, width: torch.linspace(1.0, 0.0, num_bins), False),  # Unchanged
-            "AutoContrast": (lambda num_bins, height, width: None, False),  # Unchanged
-            "Equalize": (lambda num_bins, height, width: None, False),  # Unchanged
-            "Invert": (lambda num_bins, height, width: None, False),  # "New" (equivalent to MAX_LEVEL Solarize)
             "SolarizeAdd": (lambda num_bins, height, width: torch.linspace(0., 110., num_bins), False),  # New
             "Cutout": (lambda num_bins, height, width: torch.linspace(0., float(cutout_const), num_bins), False),  # New
         }
+
+        if not args.only:
+            RandAugment17._AUGMENTATION_SPACE["AutoContrast"] = (lambda num_bins, height, width: None, False)  # Unchanged
+            RandAugment17._AUGMENTATION_SPACE["Equalize"] = (lambda num_bins, height, width: None, False)  # Unchanged
+            RandAugment17._AUGMENTATION_SPACE["Invert"] = (lambda num_bins, height, width: None, False)  # "New" (equivalent to MAX_LEVEL Solarize)
 
         MAX_LEVEL = args.epochs
 
