@@ -54,14 +54,14 @@ I have to fix some of the parameter initialization, however:
 Likely unintentionally, this means that the values are sampled from uniform distribution U(−a,a) where a = sqrt(3 / (2 * hidden_dim)) instead sqrt(3 / hidden_dim).
 Furthermore, the output projection is [initialized as `NonDynamicallyQuantizableLinear()`](https://github.com/pytorch/pytorch/blob/e62073d7997c9e63896cb5289ffd0874a8cc1838/torch/nn/modules/activation.py#L1097)
 [whose initial values are sampled from U(-sqrt(k), sqrt(k)), k = 1 / hidden_dim](https://pytorch.org/docs/stable/generated/torch.nn.Linear.html).
-Both are therefore re-initialized with U(−a,a) where a = sqrt(3 / hidden_dim) to conform with the [`jax.nn.initializers.xavier_uniform()`
+Both are therefore re-initialized with U(−a,a) where a = sqrt(3 / hidden_dim)<sup>[1](#myfootnote1)</sup> to conform with the [`jax.nn.initializers.xavier_uniform()`
 used by the reference ViT from big_vision](https://github.com/google-research/big_vision/blob/ec86e4da0f4e9e02574acdead5bd27e282013ff1/big_vision/models/vit.py#L93).
 2. pytorch's own `nn.init.trunc_normal_()` doesn't take the effect of truncation on stddev into account, so I used [the magic factor](https://github.com/google/jax/blob/1949691daabe815f4b098253609dc4912b3d61d8/jax/_src/nn/initializers.py#L334) from the JAX repo to re-initialize the patchifying `nn.Conv2d`.
 
 After 1 and 2 all of the summary statistics of the model parameters match that of the reference implementation at initialization.
 
 ## Data preprocessing and augmentation
-Torchvision [`v2.RandomResizedCrop()` defaults to cropping 8%-100%](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.RandomResizedCrop.html) of the area of the image whereas big_vision `decode_jpeg_and_inception_crop()` [defaults to 5%-100%](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L199). Torchvision transforms of [v2.RandAugment() default to zero padding](https://pytorch.org/vision/main/generated/torchvision.transforms.RandAugment.html) whereas big_vision `randaug()` [uses RGB values (128, 128, 128)](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/autoaugment.py#L676) as the replacement value. In both cases I have specified the latter to conform to the reference implementation.
+Torchvision transforms of [v2.RandAugment() default to zero padding](https://pytorch.org/vision/main/generated/torchvision.transforms.RandAugment.html) whereas big_vision `randaug()` [uses RGB values (128, 128, 128)](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/autoaugment.py#L676) as the replacement value. In both cases I have specified the latter to conform to the reference implementation.
 Model trained with all of the above for 90 epoches reached 76.91% top-1 validation set accuracy, but the loss curve and the gradient L2 norm clearly show that it deviates from the reference:
 
 [<img width="1074" alt="Screenshot 2024-07-01 at 10 28 58 PM" src="https://github.com/EIFY/mup-vit/assets/2584418/80ce12d5-8cae-4729-8556-a146fd351e83">](https://api.wandb.ai/links/eify/5l4dv2p8)
@@ -93,7 +93,22 @@ Training with the near-replication of big_vision `randaug(2, 10)` for 90 epoches
 
 [<img width="1074" alt="Screenshot 2024-07-02 at 1 45 30 PM" src="https://github.com/EIFY/mup-vit/assets/2584418/489a3193-1c91-4045-ba02-d6e25420625c">](https://api.wandb.ai/links/eify/8d0wix47)
 
-There is no more to be done on the pytorch side, however. Let's turn our attention to big_vision itself.
+It turned out that besides the default min scale ([8%](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.RandomResizedCrop.html) vs. [5%](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L199), the "Inception crop" implemented as torchvision `v2.RandomResizedCrop()` is not the same as calling `tf.slice()` with the bbox returned by `tf.image.sample_distorted_bounding_box()`:
+
+1. They both rejection-sample the crop, but `v2.RandomResizedCrop()` is hardcoded to try 10 times while `tf.image.sample_distorted_bounding_box()` defaults to 100 attempts.
+2. `v2.RandomResizedCrop()` samples the aspect ratio uniformly in log space, `tf.image.sample_distorted_bounding_box()` samples uniformly in linear space.
+3. `v2.RandomResizedCrop()` samples the area cropped uniformly while `tf.image.sample_distorted_bounding_box()` samples the crop height uniformly given the aspect ratio and area range.
+4. If all attempts fail, `v2.RandomResizedCrop()` at least crops the image to make sure that the aspect ratio falls within range before resizing. `tf.image.sample_distorted_bounding_box()` just returns the whole image (to be resized).
+
+We can verify this by taking stats of the crop size given the same image. Here is the density plot of (h, w) returned by `v2.RandomResizedCrop.get_params(..., scale=(0.05, 1.0), ratio=(3/4, 4/3))`, given an image of (height, width) = (256, 512), N=100000:
+
+![download (23)](https://github.com/user-attachments/assets/dfd24ea6-0287-49ab-8853-792c30caac77)
+
+I got 151 crop failures resulting in a bright pixel at the bottom right, but otherwise the density is roughly uniform. In comparison, here is what `tf.image.sample_distorted_bounding_box(..., area_range=[0.05, 1])` returns:
+
+![download (24)](https://github.com/user-attachments/assets/7930bce1-1682-470b-aa62-80721d1c0152)
+
+While cropping never failed, we can see clearly that it's oversampling smaller crop areas, as if there were light shining from top-left.
 
 # `big_vision` [`grad_accum_wandb`](https://github.com/EIFY/big_vision/tree/grad_accum_wandb) branch
 I first bolted on `wandb` logging and revived `utils.accumulate_gradient()` to run 1024 batch size on my GeForce RTX 3080 Laptop GPU. TensorBook is unable to handle `shuffle_buffer_size = 250_000` so I shrank it to `150_000`. Finally, I fell back to training on 100% of the training data to converge to what I had to do with pytorch. This resulted in 76.74% top-1 validation set accuracy `big-vision-repo-attempt` referenced above and consistent with the reported 76.7% top-1 validation set accuracy.
@@ -158,3 +173,5 @@ I have run out of candidate causes of discrepancies to investigate. Can it be ju
 | RTX 3080 Laptop | 5d19h32m |
 
 8x A100-SXM4-40GB is comparable but faster than a TPUv3-8 node. RTX 3080 Laptop is unsurprisingly out of the league: 1 day on it is about the same as 1 hour on the other two.
+
+<a name="myfootnote1">1</a> See https://github.com/pytorch/pytorch/issues/57109#issuecomment-828847575 for the origin of this discrepancy.
