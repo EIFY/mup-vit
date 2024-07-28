@@ -31,7 +31,7 @@ from torchvision.transforms import v2
 from torch.utils.data import Subset
 
 from simple_vit import SimpleVisionTransformer
-from rand_augment import RandAugment17
+from transforms import TFInceptionCrop, RandAugment17
 
 import wandb
 
@@ -306,7 +306,7 @@ def main_worker(gpu, args):
             split='train',
             transform=v2.Compose([
                 v2.ToImage(),
-                v2.RandomResizedCrop(224, scale=(0.05, 1.0)),
+                TFInceptionCrop(224, scale=(0.05, 1.0)),
                 v2.RandomHorizontalFlip(),
                 randaug,
                 v2.ToDtype(torch.float32, scale=True),

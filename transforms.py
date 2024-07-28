@@ -1,22 +1,130 @@
 from torchvision.transforms import v2
 
 import math
-from typing import Any, Callable, cast, Dict, List, Optional, Tuple, Type, Union
+import warnings
+from typing import Any, cast, Dict, List, Optional, Sequence, Tuple, Type, Union
 
 import PIL.Image
 import torch
 
-from torch.utils._pytree import tree_flatten, tree_unflatten, TreeSpec
-from torchvision import transforms as _transforms, tv_tensors
+from torchvision import tv_tensors
 from torchvision.transforms import _functional_tensor as _FT
-from torchvision.transforms.v2 import AutoAugmentPolicy, functional as F, InterpolationMode, Transform
-from torchvision.transforms.v2.functional._geometry import _check_interpolation
+from torchvision.transforms.v2 import functional as F, InterpolationMode, Transform
 from torchvision.transforms.v2.functional._meta import get_size
-from torchvision.transforms.v2.functional._utils import _FillType, _FillTypeJIT
-
-from torchvision.transforms.v2._utils import _get_fill, _setup_fill_arg, check_type, is_pure_tensor
+from torchvision.transforms.v2.functional._utils import _FillTypeJIT
+from torchvision.transforms.v2._utils import _get_fill, _setup_size, query_size
 
 ImageOrVideo = Union[torch.Tensor, PIL.Image.Image, tv_tensors.Image, tv_tensors.Video]
+
+
+class TFInceptionCrop(Transform):
+    """TensorFlow-style Inception crop, i.e. tf.slice() with the bbox returned by
+    tf.image.sample_distorted_bounding_box(). Note that get_params() is not supported. 
+    """
+
+    def __init__(
+        self,
+        size: Union[int, Sequence[int]],
+        scale: Tuple[float, float] = (0.08, 1.0),
+        ratio: Tuple[float, float] = (3.0 / 4.0, 4.0 / 3.0),
+        interpolation: Union[InterpolationMode, int] = InterpolationMode.BILINEAR,
+        antialias: Optional[bool] = True,
+        max_attempts: int = 100,
+    ) -> None:
+        super().__init__()
+        self.size = _setup_size(size, error_msg="Please provide only two dimensions (h, w) for size.")
+
+        if not isinstance(scale, Sequence):
+            raise TypeError("Scale should be a sequence")
+        if not isinstance(ratio, Sequence):
+            raise TypeError("Ratio should be a sequence")
+        if (scale[0] > scale[1]) or (ratio[0] > ratio[1]):
+            warnings.warn("Scale and ratio should be of kind (min, max)")
+
+        self.scale = scale
+        self.ratio = ratio
+        self.interpolation = interpolation
+        self.antialias = antialias
+        self.max_attempts = max_attempts
+
+        self._ratio = torch.tensor(self.ratio)
+
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
+        """Almost line-by-line translation of the core logic of
+        tensorflow/core/kernels/image/sample_distorted_bounding_box_op.cc
+        """
+        original_height, original_width = query_size(flat_inputs)
+        area = original_height * original_width
+
+        ratio = self._ratio
+        for _ in range(self.max_attempts):
+            aspect_ratio = torch.empty(1).uniform_(
+                ratio[0],  # type: ignore[arg-type]
+                ratio[1],  # type: ignore[arg-type]
+            ).item()
+
+            min_area = self.scale[0] * area
+            max_area = self.scale[1] * area
+
+            min_height = round(math.sqrt(min_area / aspect_ratio))
+            max_height = round(math.sqrt(max_area / aspect_ratio))
+
+            # TODO(b/140767341): Rewrite the generation logic to be more tolerant
+            # of floating point behavior.
+            if round(max_height * aspect_ratio) > original_width:
+                # We must find the smallest max_height satisfying
+                # round(max_height * aspect_ratio) <= original_width:
+                EPSILON = 0.0000001
+                max_height = int((original_width + 0.5 - EPSILON) / aspect_ratio)
+                # If due to some precision issues, we still cannot guarantee
+                # round(max_height * aspect_ratio) <= original_width, subtract 1 from
+                # max height.
+                if round(max_height * aspect_ratio) > original_width:
+                    max_height -= 1
+
+            max_height = min(max_height, original_height)
+            min_height = min(min_height, max_height)
+
+            # We need to generate a random number in the closed range
+            # [min_height, max_height].
+            height = torch.randint(min_height, max_height + 1, size=(1,)).item()
+            width = round(height * aspect_ratio)
+
+            # Let us not fail if rounding error causes the area to be
+            # outside the constraints.
+            # Try first with a slightly bigger rectangle first.
+            area = width * height
+            if area < min_area:
+                height += 1
+                width = round(height * aspect_ratio)
+                area = width * height
+
+            # Let us not fail if rounding error causes the area to be
+            # outside the constraints.
+            # Try first with a slightly smaller rectangle first.
+            if area > max_area:
+                height -= 1
+                width = round(height * aspect_ratio)
+                area = width * height
+
+            # Now, we explored all options to rectify small rounding errors.
+            # If the constraints can be satisfied: break out of the loop.
+            if 0 < width <= original_width and 0 < height <= original_height and min_area <= area <= max_area:
+                i = torch.randint(0, original_height - height + 1, size=(1,)).item()
+                j = torch.randint(0, original_width - width + 1, size=(1,)).item()
+                break
+        else:
+            # Fallback to the entire image
+            width = original_width
+            height = original_height
+            i = j = 0
+
+        return dict(top=i, left=j, height=height, width=width)
+
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return self._call_kernel(
+            F.resized_crop, inpt, **params, size=self.size, interpolation=self.interpolation, antialias=self.antialias
+        )
 
 
 # Implemented with references to big_vision and https://github.com/pytorch/vision/pull/6609
