@@ -108,7 +108,12 @@ I got 151 crop failures resulting in a bright pixel at the bottom right, but oth
 
 ![download (24)](https://github.com/user-attachments/assets/7930bce1-1682-470b-aa62-80721d1c0152)
 
-While cropping never failed, we can see clearly that it's oversampling smaller crop areas, as if there were light shining from top-left.
+While cropping never failed, we can see clearly that it's oversampling smaller crop areas, as if there were light shining from top-left ([notebook](notebooks/InceptionCropStats.ipynb)). The last discrepancy goes away after re-implementing `tf.image.sample_distorted_bounding_box()`'s sampling logic:
+
+[<img width="1072" alt="Screenshot 2024-07-28 at 2 50 01 PM" src="https://github.com/user-attachments/assets/e735fcc5-129b-4cb2-ab66-677453da3360">](https://api.wandb.ai/links/eify/sda1gc9d)
+[<img width="1072" alt="Screenshot 2024-07-28 at 2 50 20 PM" src="https://github.com/user-attachments/assets/5e36677b-8251-4abe-8588-81235c18657d">](https://api.wandb.ai/links/eify/sda1gc9d)
+
+This true reproduction model reached 76.94% top-1 validation set accuracy after 90 epoches. Now let's turn our attention to big_vision itself and double-check the effects of its bugs, inconsistencies, and unusual features.
 
 # `big_vision` [`grad_accum_wandb`](https://github.com/EIFY/big_vision/tree/grad_accum_wandb) branch
 I first bolted on `wandb` logging and revived `utils.accumulate_gradient()` to run 1024 batch size on my GeForce RTX 3080 Laptop GPU. TensorBook is unable to handle `shuffle_buffer_size = 250_000` so I shrank it to `150_000`. Finally, I fell back to training on 100% of the training data to converge to what I had to do with pytorch. This resulted in 76.74% top-1 validation set accuracy `big-vision-repo-attempt` referenced above and consistent with the reported 76.7% top-1 validation set accuracy.
@@ -162,7 +167,7 @@ Finally, back to `shuffle_buffer_size`. Unlike `torch.utils.data.DataLoader(shuf
 As a by-product, this also proves that big_vision gradient accumulation and multi-GPU training are fully equivalent.
 
 # Conclusions
-I have run out of candidate causes of discrepancies to investigate. Can it be just due to randomness? While the discrepancy of the top-1 validation set accuracy is small (77.27% vs. 76.7%-76.87%), the loss curves suggest that it's real. Furthermore, I have trained a model by [grafting the pytorch model/optimizer/scheduler on the big_vision data pipelines](https://github.com/EIFY/big_vision/tree/grafted) and it clocked at [76.38% top-1 validation set accuracy](https://wandb.ai/eify/mup-vit/reports/torch-on-big-vision-input3--Vmlldzo4NTMzMTU4). If we believe that it behaves the same as the big_vision models on the big_vision data pipelines, the discrepancy can be up to +0.9%. I am therefore opening up the results here for new ideas and further investigation.
+This is the true end of reproducing the [Better plain ViT baselines for ImageNet-1k](https://arxiv.org/abs/2205.01580) in pytorch. There is no if/but, no mystery left. It's rather ironic that after checking and fixing discrepancies for months, fixing the last discrepancy turned out to be a step-down (77.27% vs. 76.7%-76.94%) in terms of model performance. I have therefore added `--torchvision-inception-crop` as an option to switch back to torchvision's Inception crop.
 
 *Postscript*: Metrics of the models aside, in terms of training walltime, modern (2.2+) PyTorch with `compile()` and JAX are [nearly identical on the same GPU](https://api.wandb.ai/links/eify/rprx0dqy). The tiny difference may well be fully-explained by the overhead of transposing from channels-last to channels-first and converting from `tf.Tensor` to `torch.Tensor`. As for hardware comparison, here are the walltimes reported:
 
