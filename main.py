@@ -63,6 +63,9 @@ parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
 parser.add_argument('--wd', '--weight-decay', default=0.1, type=float,
                     metavar='W', help='weight decay (default: 0.1)',
                     dest='weight_decay')
+parser.add_argument('--torchvision-inception-crop', action='store_true',
+                    help="Switch back to torchvision's RandomResizedCrop(), "
+                         'which actually improves the model')
 parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
@@ -300,13 +303,14 @@ def main_worker(gpu, args):
             "Cutout": (lambda num_bins, height, width: torch.linspace(0., float(cutout_const), num_bins), False),  # New
         }
         randaug = RandAugment17(2, 10, num_magnitude_bins=MAX_LEVEL + 1, fill=[128] * 3)
+        inception_crop = v2.RandomResizedCrop if args.torchvision_inception_crop else TFInceptionCrop
 
         train_dataset = datasets.ImageNet(
             args.data,
             split='train',
             transform=v2.Compose([
                 v2.ToImage(),
-                TFInceptionCrop(224, scale=(0.05, 1.0)),
+                inception_crop(224, scale=(0.05, 1.0)),
                 v2.RandomHorizontalFlip(),
                 randaug,
                 v2.ToDtype(torch.float32, scale=True),
