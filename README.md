@@ -93,7 +93,7 @@ Training with the near-replication of big_vision `randaug(2, 10)` for 90 epoches
 
 [<img width="1074" alt="Screenshot 2024-07-02 at 1 45 30 PM" src="https://github.com/EIFY/mup-vit/assets/2584418/489a3193-1c91-4045-ba02-d6e25420625c">](https://api.wandb.ai/links/eify/8d0wix47)
 
-It turned out that besides the default min scale ([8%](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.RandomResizedCrop.html) vs. [5%](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L199), the "Inception crop" implemented as torchvision `v2.RandomResizedCrop()` is not the same as calling `tf.slice()` with the bbox returned by `tf.image.sample_distorted_bounding_box()`:
+It turned out that besides the default min scale ([8%](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.RandomResizedCrop.html) vs. [5%](https://github.com/google-research/big_vision/blob/01edb81a4716f93a48be43b3a4af14e29cdb3a7f/big_vision/pp/ops_image.py#L199)), the "Inception crop" implemented as torchvision `v2.RandomResizedCrop()` is not the same as calling `tf.slice()` with the bbox returned by `tf.image.sample_distorted_bounding_box()`:
 
 1. They both rejection-sample the crop, but `v2.RandomResizedCrop()` is hardcoded to try 10 times while `tf.image.sample_distorted_bounding_box()` defaults to 100 attempts.
 2. `v2.RandomResizedCrop()` samples the aspect ratio uniformly in log space, `tf.image.sample_distorted_bounding_box()` samples uniformly in linear space.
