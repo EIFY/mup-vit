@@ -100,13 +100,13 @@ It turned out that besides the default min scale ([8%](https://pytorch.org/visio
 3. `v2.RandomResizedCrop()` samples the area cropped uniformly while `tf.image.sample_distorted_bounding_box()` samples the crop height uniformly given the aspect ratio and area range.
 4. If all attempts fail, `v2.RandomResizedCrop()` at least crops the image to make sure that the aspect ratio falls within range before resizing. `tf.image.sample_distorted_bounding_box()` just returns the whole image (to be resized).
 
-We can verify this by taking stats of the crop size given the same image. Here is the density plot of (h, w) returned by `v2.RandomResizedCrop.get_params(..., scale=(0.05, 1.0), ratio=(3/4, 4/3))`, given an image of (height, width) = (256, 512), N=100000:
+We can verify this by taking stats of the crop size given the same image. Here is the density plot of (h, w) returned by `v2.RandomResizedCrop.get_params(..., scale=(0.05, 1.0), ratio=(3/4, 4/3))`, given an image of (height, width) = (256, 512), N = 10000000:
 
-![download (23)](https://github.com/user-attachments/assets/dfd24ea6-0287-49ab-8853-792c30caac77)
+![torch_hw_counts](https://github.com/user-attachments/assets/f2a19bab-4745-4d9c-af57-3f93fab539cd)
 
-I got 151 crop failures resulting in a bright pixel at the bottom right, but otherwise the density is roughly uniform. In comparison, here is what `tf.image.sample_distorted_bounding_box(..., area_range=[0.05, 1])` returns:
+I got almost 14340 crop failures resulting in a bright pixel at the bottom right, but otherwise the density is roughly uniform. In comparison, here is what `tf.image.sample_distorted_bounding_box(..., area_range=[0.05, 1])` returns:
 
-![download (24)](https://github.com/user-attachments/assets/7930bce1-1682-470b-aa62-80721d1c0152)
+![tf_hw_counts](https://github.com/user-attachments/assets/bd6db803-4b85-4e29-b92d-2819d1f9d3c3)
 
 While cropping never failed, we can see clearly that it's oversampling smaller crop areas, as if there were light shining from top-left ([notebook](notebooks/InceptionCropStats.ipynb)). The last discrepancy goes away after re-implementing `tf.image.sample_distorted_bounding_box()`'s sampling logic:
 
