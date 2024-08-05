@@ -155,21 +155,13 @@ class SimpleVisionTransformer(nn.Module):
 
         self.heads = nn.Sequential(heads_layers)
 
-        if isinstance(self.conv_proj, nn.Conv2d):
-            # Init the patchify stem
-            fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1]
-            # constant is stddev of standard normal truncated to (-2, 2)
-            std = math.sqrt(1 / fan_in) / .87962566103423978
-            nn.init.trunc_normal_(self.conv_proj.weight, std=std, a=-2 * std, b=2 * std)
-            if self.conv_proj.bias is not None:
-                nn.init.zeros_(self.conv_proj.bias)
-        elif self.conv_proj.conv_last is not None and isinstance(self.conv_proj.conv_last, nn.Conv2d):
-            # Init the last 1x1 conv of the conv stem
-            nn.init.normal_(
-                self.conv_proj.conv_last.weight, mean=0.0, std=math.sqrt(2.0 / self.conv_proj.conv_last.out_channels)
-            )
-            if self.conv_proj.conv_last.bias is not None:
-                nn.init.zeros_(self.conv_proj.conv_last.bias)
+        # Init the patchify stem
+        fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1]
+        # constant is stddev of standard normal truncated to (-2, 2)
+        std = math.sqrt(1 / fan_in) / .87962566103423978
+        nn.init.trunc_normal_(self.conv_proj.weight, std=std, a=-2 * std, b=2 * std)
+        if self.conv_proj.bias is not None:
+            nn.init.zeros_(self.conv_proj.bias)
 
         if hasattr(self.heads, "pre_logits") and isinstance(self.heads.pre_logits, nn.Linear):
             fan_in = self.heads.pre_logits.in_features
