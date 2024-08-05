@@ -21,6 +21,16 @@ def posemb_sincos_2d(h, w, dim, temperature: int = 10000, dtype = torch.float32)
     return pe.type(dtype)
 
 
+def _reset_conv_parameters(conv):
+    # Init the patchify stem
+    fan_in = conv.in_channels * conv.kernel_size[0] * conv.kernel_size[1] // conv.groups
+    # constant is stddev of standard normal truncated to (-2, 2)
+    std = math.sqrt(1 / fan_in) / .87962566103423978
+    nn.init.trunc_normal_(conv.weight, std=std, a=-2 * std, b=2 * std)
+    if conv.bias is not None:
+        nn.init.zeros_(conv.bias)
+
+
 class EncoderBlock(nn.Module):
     """Transformer encoder block."""
 
@@ -112,6 +122,7 @@ class SimpleVisionTransformer(nn.Module):
         num_classes: int = 1000,
         representation_size: Optional[int] = None,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        patchifier = 'regular'
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
@@ -125,9 +136,24 @@ class SimpleVisionTransformer(nn.Module):
         self.representation_size = representation_size
         self.norm_layer = norm_layer
 
-        self.conv_proj = nn.Conv2d(
-            in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
-        )
+        if patchifier == 'regular':
+            self.conv_proj = nn.Conv2d(
+                in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
+            )
+        else:
+            # Edwin Arkel Rios' rule of thumb
+            group_size = self.hidden_dim // self.patch_size
+            group_channels = 3 * group_size
+            self.conv_proj = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=3, out_channels=group_channels, kernel_size=patch_size, stride=patch_size, groups=3
+                ),
+                nn.BatchNorm2d(group_channels),
+                nn.GELU(),
+                nn.Conv2d(
+                    in_channels=group_channels, out_channels=self.hidden_dim, kernel_size=1, stride=1
+                ),
+            )
 
         h = w = image_size // patch_size
         seq_length = h * w
@@ -156,20 +182,10 @@ class SimpleVisionTransformer(nn.Module):
         self.heads = nn.Sequential(heads_layers)
 
         if isinstance(self.conv_proj, nn.Conv2d):
-            # Init the patchify stem
-            fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1]
-            # constant is stddev of standard normal truncated to (-2, 2)
-            std = math.sqrt(1 / fan_in) / .87962566103423978
-            nn.init.trunc_normal_(self.conv_proj.weight, std=std, a=-2 * std, b=2 * std)
-            if self.conv_proj.bias is not None:
-                nn.init.zeros_(self.conv_proj.bias)
-        elif self.conv_proj.conv_last is not None and isinstance(self.conv_proj.conv_last, nn.Conv2d):
-            # Init the last 1x1 conv of the conv stem
-            nn.init.normal_(
-                self.conv_proj.conv_last.weight, mean=0.0, std=math.sqrt(2.0 / self.conv_proj.conv_last.out_channels)
-            )
-            if self.conv_proj.conv_last.bias is not None:
-                nn.init.zeros_(self.conv_proj.conv_last.bias)
+            _reset_conv_parameters(self.conv_proj)
+        else:
+            _reset_conv_parameters(self.conv_proj[0])
+            _reset_conv_parameters(self.conv_proj[-1])
 
         if hasattr(self.heads, "pre_logits") and isinstance(self.heads.pre_logits, nn.Linear):
             fan_in = self.heads.pre_logits.in_features

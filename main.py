@@ -66,6 +66,9 @@ parser.add_argument('--wd', '--weight-decay', default=0.1, type=float,
 parser.add_argument('--torchvision-inception-crop', action='store_true',
                     help="Switch back to torchvision's RandomResizedCrop(), "
                          'which actually improves the model')
+parser.add_argument('--patchifier', choices=['regular', 'single-dws'], default='regular',
+                    help="Choices of patchifier: the usual ViT patchifier or "
+                         "depthwise + pointwise conv.")
 parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
@@ -206,6 +209,7 @@ def main_worker(gpu, args):
         num_heads=6,
         hidden_dim=384,
         mlp_dim=1536,
+        patchifier=args.patchifier,
     )
 
     wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
