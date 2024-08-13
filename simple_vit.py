@@ -141,8 +141,8 @@ class SimpleVisionTransformer(nn.Module):
                 in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
             )
         else:
-            # Edwin Arkel Rios' rule of thumb
-            group_size = self.hidden_dim // self.patch_size
+            # Edwin Arkel Rios' FLOP-matching
+            group_size = int(self.hidden_dim * self.patch_size ** 2 / (3 * self.patch_size ** 2 + self.hidden_dim))
             group_channels = 3 * group_size
             self.conv_proj = nn.Sequential(
                 nn.Conv2d(
