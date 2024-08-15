@@ -54,6 +54,7 @@ parser.add_argument('--mlp-head', action='store_true',
 parser.add_argument('--representation-size', default=None, type=int, metavar='N',
                     help='Size of the MLP classification head hidden layer, '
                          "defaults to --hidden-dim. No effect if --mlp-head isn't set")
+parser.add_argument('--pool-type', default='gap', type=str, choices=['gap', 'tok'])
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
@@ -223,6 +224,7 @@ def main_worker(gpu, args):
         hidden_dim=args.hidden_dim,
         mlp_dim=args.hidden_dim * 4,
         representation_size=args.representation_size,
+        pool_type=args.pool_type,
     )
 
     wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]

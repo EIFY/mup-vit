@@ -121,6 +121,7 @@ class SimpleVisionTransformer(nn.Module):
         attention_dropout: float = 0.0,
         num_classes: int = 1000,
         representation_size: Optional[int] = None,
+        pool_type: str = "gap",
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
     ):
         super().__init__()
@@ -133,6 +134,7 @@ class SimpleVisionTransformer(nn.Module):
         self.dropout = dropout
         self.num_classes = num_classes
         self.representation_size = representation_size
+        self.pool_type = pool_type
         self.norm_layer = norm_layer
 
         self.conv_proj = nn.Conv2d(
@@ -202,8 +204,15 @@ class SimpleVisionTransformer(nn.Module):
         # Reshape and permute the input tensor
         x = self._process_input(x)
         x = x + self.pos_embedding
-        x = self.encoder(x)
-        x = x.mean(dim = 1)
+        if self.pool_type == 'tok':
+            n, _, c = x.shape
+            cls = torch.zeros(1, 1, c, device=x.device)
+            x = torch.cat([torch.tile(cls, (n, 1, 1)), x], dim=1)
+            x = self.encoder(x)
+            x = x[:, 0]
+        else:
+            x = self.encoder(x)
+            x = x.mean(dim = 1)
         x = self.heads(x)
 
         return x
