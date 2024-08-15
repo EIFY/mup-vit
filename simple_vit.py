@@ -96,6 +96,16 @@ class Encoder(nn.Module):
         return self.ln(self.layers(self.dropout(input)))
 
 
+def jax_lecun_normal(layer, fan_in):
+    """(re-)initializes layer weight in the same way as jax.nn.initializers.lecun_normal and bias to zero"""
+
+    # constant is stddev of standard normal truncated to (-2, 2)
+    std = math.sqrt(1 / fan_in) / .87962566103423978
+    nn.init.trunc_normal_(layer.weight, std=std, a=-2 * std, b=2 * std)
+    if layer.bias is not None:
+        nn.init.zeros_(layer.bias)
+
+
 class SimpleVisionTransformer(nn.Module):
     """Vision Transformer modified per https://arxiv.org/abs/2205.01580."""
 
@@ -156,17 +166,12 @@ class SimpleVisionTransformer(nn.Module):
         self.heads = nn.Sequential(heads_layers)
 
         # Init the patchify stem
-        fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1]
-        # constant is stddev of standard normal truncated to (-2, 2)
-        std = math.sqrt(1 / fan_in) / .87962566103423978
-        nn.init.trunc_normal_(self.conv_proj.weight, std=std, a=-2 * std, b=2 * std)
-        if self.conv_proj.bias is not None:
-            nn.init.zeros_(self.conv_proj.bias)
+        fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1] // self.conv_proj.groups
+        jax_lecun_normal(self.conv_proj, fan_in)
 
         if hasattr(self.heads, "pre_logits") and isinstance(self.heads.pre_logits, nn.Linear):
             fan_in = self.heads.pre_logits.in_features
-            nn.init.trunc_normal_(self.heads.pre_logits.weight, std=math.sqrt(1 / fan_in))
-            nn.init.zeros_(self.heads.pre_logits.bias)
+            jax_lecun_normal(self.heads.pre_logits, fan_in)
 
         if isinstance(self.heads.head, nn.Linear):
             nn.init.zeros_(self.heads.head.weight)

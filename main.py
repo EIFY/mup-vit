@@ -43,9 +43,17 @@ parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
                     help='path to dataset (default: imagenet)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
+parser.add_argument('--hidden-dim', default=384, type=int, metavar='N',
+                    help='Embedding dimension of the ViT (default: 384)')
 parser.add_argument('--input-resolution', default=224, type=int, metavar='RES',
                     help='Input resolution, i.e. train/val crop size (default: 224)')
 parser.add_argument('--patch-size', default=16, type=int, metavar='PS')
+parser.add_argument('--mlp-head', action='store_true',
+                    help='Use a MLP classification head with one hidden tanh layer '
+                         'instead of a single linear layer')
+parser.add_argument('--representation-size', default=None, type=int, metavar='N',
+                    help='Size of the MLP classification head hidden layer, '
+                         "defaults to --hidden-dim. No effect if --mlp-head isn't set")
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
@@ -120,7 +128,11 @@ def broadcast_object(args, obj, src=0):
 
 def main():
     args = parser.parse_args()
-    assert not args.input_resolution % args.patch_size, 'Input resolution must be a multiple of patch size.'
+
+    if not args.mlp_head:
+        args.representation_size = None
+    elif args.representation_size is None:
+        args.representation_size = args.hidden_dim
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -208,8 +220,9 @@ def main_worker(gpu, args):
         patch_size=args.patch_size,
         num_layers=12,
         num_heads=6,
-        hidden_dim=384,
-        mlp_dim=1536,
+        hidden_dim=args.hidden_dim,
+        mlp_dim=args.hidden_dim * 4,
+        representation_size=args.representation_size,
     )
 
     wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
