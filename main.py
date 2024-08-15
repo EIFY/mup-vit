@@ -43,6 +43,9 @@ parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
                     help='path to dataset (default: imagenet)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
+parser.add_argument('--input-resolution', default=224, type=int, metavar='RES',
+                    help='Input resolution, i.e. train/val crop size (default: 224)')
+parser.add_argument('--patch-size', default=16, type=int, metavar='PS')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
@@ -117,6 +120,7 @@ def broadcast_object(args, obj, src=0):
 
 def main():
     args = parser.parse_args()
+    assert not args.input_resolution % args.patch_size, 'Input resolution must be a multiple of patch size.'
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -200,8 +204,8 @@ def main_worker(gpu, args):
                                 world_size=args.world_size, rank=args.rank)
     # create model
     model = SimpleVisionTransformer(
-        image_size=224,
-        patch_size=16,
+        image_size=args.input_resolution,
+        patch_size=args.patch_size,
         num_layers=12,
         num_heads=6,
         hidden_dim=384,
@@ -264,9 +268,10 @@ def main_worker(gpu, args):
     # Data loading code
     if args.dummy:
         print("=> Dummy data is used!")
-        train_dataset = datasets.FakeData(1281167, (3, 224, 224), 1000,
+        input_shape = (3, args.input_resolution, args.input_resolution)
+        train_dataset = datasets.FakeData(1281167, input_shape, 1000,
             v2.ToDtype(torch.float32, scale=True))
-        val_dataset = datasets.FakeData(50000, (3, 224, 224), 1000,
+        val_dataset = datasets.FakeData(50000, input_shape, 1000,
             v2.ToDtype(torch.float32, scale=True))
     else:
         value_range = v2.Normalize(
@@ -310,7 +315,7 @@ def main_worker(gpu, args):
             split='train',
             transform=v2.Compose([
                 v2.ToImage(),
-                inception_crop(224, scale=(0.05, 1.0)),
+                inception_crop(args.input_resolution, scale=(0.05, 1.0)),
                 v2.RandomHorizontalFlip(),
                 randaug,
                 v2.ToDtype(torch.float32, scale=True),
@@ -323,7 +328,7 @@ def main_worker(gpu, args):
             transform=v2.Compose([
                 v2.ToImage(),
                 v2.Resize(256),
-                v2.CenterCrop(224),
+                v2.CenterCrop(args.input_resolution),
                 v2.ToDtype(torch.float32, scale=True),
                 value_range,
             ]))
