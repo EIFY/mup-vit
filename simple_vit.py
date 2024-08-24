@@ -109,6 +109,9 @@ def jax_lecun_normal(layer, fan_in):
 class SimpleVisionTransformer(nn.Module):
     """Vision Transformer modified per https://arxiv.org/abs/2205.01580."""
 
+    def _learned_embeddings(self, num):
+        return nn.Parameter(torch.normal(mean=0., std=math.sqrt(1 / self.hidden_dim), size=(1, num, self.hidden_dim)))
+
     def __init__(
         self,
         image_size: int,
@@ -120,6 +123,7 @@ class SimpleVisionTransformer(nn.Module):
         dropout: float = 0.0,
         attention_dropout: float = 0.0,
         num_classes: int = 1000,
+        posemb: str = "sincos2d",
         representation_size: Optional[int] = None,
         pool_type: str = "gap",
         register: int = 0,
@@ -141,7 +145,7 @@ class SimpleVisionTransformer(nn.Module):
         if self.register == 1:
             self.register_buffer("reg", torch.zeros(1, 1, hidden_dim))
         elif self.register > 1:  # Random initialization needed to break the symmetry
-            self.reg = nn.Parameter(torch.normal(mean=0., std=math.sqrt(1 / hidden_dim), size=(1, self.register, hidden_dim)))
+            self.reg = self._learned_embeddings(self.register)
 
         self.conv_proj = nn.Conv2d(
             in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
@@ -149,7 +153,12 @@ class SimpleVisionTransformer(nn.Module):
 
         h = w = image_size // patch_size
         seq_length = h * w
-        self.register_buffer("pos_embedding", posemb_sincos_2d(h=h, w=w, dim=hidden_dim))
+        if posemb == "sincos2d":
+            self.register_buffer("pos_embedding", posemb_sincos_2d(h=h, w=w, dim=hidden_dim))
+        elif posemb == "learn":
+            self.pos_embedding = self._learned_embeddings(seq_length)
+        else:
+            self.pos_embedding = None
 
         self.encoder = Encoder(
             seq_length,
@@ -209,7 +218,8 @@ class SimpleVisionTransformer(nn.Module):
     def forward(self, x: torch.Tensor):
         # Reshape and permute the input tensor
         x = self._process_input(x)
-        x = x + self.pos_embedding
+        if self.pos_embedding is not None:
+            x = x + self.pos_embedding
         if self.register:
             n = x.shape[0]
             x = torch.cat([torch.tile(self.reg, (n, 1, 1)), x], dim=1)
