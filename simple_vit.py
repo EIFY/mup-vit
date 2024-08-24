@@ -122,6 +122,7 @@ class SimpleVisionTransformer(nn.Module):
         num_classes: int = 1000,
         representation_size: Optional[int] = None,
         pool_type: str = "gap",
+        register: int = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
     ):
         super().__init__()
@@ -136,6 +137,11 @@ class SimpleVisionTransformer(nn.Module):
         self.representation_size = representation_size
         self.pool_type = pool_type
         self.norm_layer = norm_layer
+        self.register = register + (pool_type == 'tok')  # [CLS] token is just another register
+        if self.register == 1:
+            self.register_buffer("reg", torch.zeros(1, 1, hidden_dim))
+        elif self.register > 1:  # Random initialization needed to break the symmetry
+            self.reg = nn.Parameter(torch.normal(mean=0., std=math.sqrt(1 / hidden_dim), size=(1, self.register, hidden_dim)))
 
         self.conv_proj = nn.Conv2d(
             in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
@@ -204,14 +210,14 @@ class SimpleVisionTransformer(nn.Module):
         # Reshape and permute the input tensor
         x = self._process_input(x)
         x = x + self.pos_embedding
+        if self.register:
+            n = x.shape[0]
+            x = torch.cat([torch.tile(self.reg, (n, 1, 1)), x], dim=1)
+        x = self.encoder(x)
         if self.pool_type == 'tok':
-            n, _, c = x.shape
-            cls = torch.zeros(1, 1, c, device=x.device)
-            x = torch.cat([torch.tile(cls, (n, 1, 1)), x], dim=1)
-            x = self.encoder(x)
             x = x[:, 0]
         else:
-            x = self.encoder(x)
+            x = x[:, self.register:]
             x = x.mean(dim = 1)
         x = self.heads(x)
 
