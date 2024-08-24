@@ -48,6 +48,8 @@ parser.add_argument('--hidden-dim', default=384, type=int, metavar='N',
 parser.add_argument('--input-resolution', default=224, type=int, metavar='RES',
                     help='Input resolution, i.e. train/val crop size (default: 224)')
 parser.add_argument('--patch-size', default=16, type=int, metavar='PS')
+parser.add_argument('--num-layers', default=12, type=int, metavar='N')
+parser.add_argument('--num-heads', default=6, type=int, metavar='N')
 parser.add_argument('--posemb', default='sincos2d', type=str,
                     choices=['none', 'sincos2d', 'learn'])
 parser.add_argument('--mlp-head', action='store_true',
@@ -224,8 +226,8 @@ def main_worker(gpu, args):
     model = SimpleVisionTransformer(
         image_size=args.input_resolution,
         patch_size=args.patch_size,
-        num_layers=12,
-        num_heads=6,
+        num_layers=args.num_layers,
+        num_heads=args.num_heads,
         hidden_dim=args.hidden_dim,
         mlp_dim=args.hidden_dim * 4,
         posemb=args.posemb,
