@@ -108,7 +108,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
-parser.add_argument('--dummy', action='store_true', help="use fake data to benchmark")
+parser.add_argument('--fake-data', action='store_true', help="use fake data to benchmark")
 parser.add_argument("--logs", default="./logs/", type=str,
                     help="Where to store logs. Use None to avoid storing logs.")
 parser.add_argument('--name', default=None, type=str,
@@ -173,7 +173,7 @@ def main():
     if args.name is None:
         date_str = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
         if args.distributed:
-            # sync date_str from master to all ranks
+            # sync date_str from primary to all ranks
             date_str = broadcast_object(args, date_str)
         args.name = '-'.join([
             date_str,
@@ -198,7 +198,7 @@ def main():
         main_worker(args.gpu, args)
 
 
-def is_master(args):
+def is_primary(args):
     return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % arg.ngpus_per_node == 0)
 
 
@@ -290,13 +290,15 @@ def main_worker(gpu, args):
     )
 
     # Data loading code
-    if args.dummy:
-        print("=> Dummy data is used!")
+    if args.fake_data:
+        print("=> Fake data is used!")
         input_shape = (3, args.input_resolution, args.input_resolution)
-        train_dataset = datasets.FakeData(1281167, input_shape, 1000,
-            v2.ToDtype(torch.float32, scale=True))
-        val_dataset = datasets.FakeData(50000, input_shape, 1000,
-            v2.ToDtype(torch.float32, scale=True))
+        transform = v2.Compose([
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+        ])
+        train_dataset = datasets.FakeData(1281167, input_shape, 1000, transform)
+        val_dataset = datasets.FakeData(50000, input_shape, 1000, transform)
     else:
         value_range = v2.Normalize(
             mean=[0.5] * 3,
@@ -405,7 +407,7 @@ def main_worker(gpu, args):
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
-    if args.wandb and is_master(args):
+    if args.wandb and is_primary(args):
         wandb.init(
             project="mup-vit",
             name=args.name,
@@ -496,7 +498,7 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
 
         if step % args.print_freq == 0:
             progress.display(step)
-            if args.wandb and is_master(args):
+            if args.wandb and is_primary(args):
 
                 with torch.no_grad():
                     l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
@@ -525,7 +527,7 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
             is_best = acc1 > best_acc1
             best_acc1 = max(acc1, best_acc1)
 
-            if is_master(args):
+            if is_primary(args):
                 save_checkpoint({
                     'step': step,
                     'state_dict': original_model.state_dict(),
@@ -598,7 +600,7 @@ def validate(val_loader, model, criterion, step, args):
 
     progress.display_summary()
 
-    if args.wandb and is_master(args):        
+    if args.wandb and is_primary(args):
         log_data = {
             'val/loss': losses.avg,
             'val/acc@1': top1.avg,
