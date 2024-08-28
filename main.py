@@ -134,6 +134,12 @@ def broadcast_object(args, obj, src=0):
         return objects[0]
 
 
+mixup = v2.MixUp(alpha=0.2, num_classes=1000)
+
+def collate(batch):
+    return mixup(*torch.utils.data.default_collate(batch))
+
+
 def main():
     args = parser.parse_args()
 
@@ -266,9 +272,6 @@ def main_worker(gpu, args):
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
         model = model.to(device)
-    else:
-        # DataParallel will divide and allocate batch_size to all available GPUs
-        model = torch.nn.DataParallel(model).cuda()
 
     if torch.cuda.is_available():
         if args.gpu:
@@ -369,16 +372,15 @@ def main_worker(gpu, args):
         train_sampler = None
         val_sampler = None
 
-    mixup = v2.MixUp(alpha=0.2, num_classes=1000)
-
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
-        collate_fn=lambda batch: mixup(*torch.utils.data.default_collate(batch)), drop_last=True)
+        collate_fn=collate, drop_last=True, multiprocessing_context='spawn')
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True, sampler=val_sampler)
+        num_workers=args.workers, pin_memory=True, sampler=val_sampler,
+        multiprocessing_context='spawn')
 
     warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
@@ -425,7 +427,10 @@ def main_worker(gpu, args):
     # weights without the prefix.
     print('Compiling model...')
     original_model = model
-    model = torch.compile(original_model)
+
+    # Inductor doesn't support MPS yet (https://github.com/pytorch/pytorch/issues/125254)
+    model = torch.compile(
+        original_model, backend="aot_eager" if device.type == 'mps' else "inductor")
 
     if args.evaluate:
         # evaluate on validation set.
@@ -595,7 +600,7 @@ def validate(val_loader, model, criterion, step, args):
                                  range(len(val_loader.sampler) * args.world_size, len(val_loader.dataset)))
         aux_val_loader = torch.utils.data.DataLoader(
             aux_val_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=True)
+            num_workers=args.workers, pin_memory=True, multiprocessing_context='spawn')
         run_validate(aux_val_loader, len(val_loader))
 
     progress.display_summary()
