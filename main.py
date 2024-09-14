@@ -134,6 +134,12 @@ def broadcast_object(args, obj, src=0):
         return objects[0]
 
 
+mixup = v2.MixUp(alpha=0.2, num_classes=1000)
+
+def collate(batch):
+    return mixup(*torch.utils.data.default_collate(batch))
+
+
 def main():
     args = parser.parse_args()
 
@@ -220,6 +226,7 @@ def main_worker(gpu, args):
             # For multiprocessing distributed training, rank needs to be the
             # global rank among all the processes
             args.rank = args.rank * args.ngpus_per_node + gpu
+    if args.distributed or args.ngpus_per_node > 1:
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
@@ -241,14 +248,19 @@ def main_worker(gpu, args):
 
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
         print('using CPU, this will be slow')
-    elif args.distributed:
-        # For multiprocessing distributed, DistributedDataParallel constructor
-        # should always set the single device scope, otherwise,
-        # DistributedDataParallel will use all available devices.
-        if torch.cuda.is_available():
+        device = torch.device("cpu")
+    elif torch.cuda.is_available():
+        torch.cuda.device(args.gpu)
+        model.cuda(args.gpu)
+        device = "cuda"
+        if args.gpu:
+            device += ':{}'.format(args.gpu)
+        device = torch.device(device)
+        if args.distributed or args.ngpus_per_node > 1:
+            # For multiprocessing distributed, DistributedDataParallel constructor
+            # should always set the single device scope, otherwise,
+            # DistributedDataParallel will use all available
             if args.gpu is not None:
-                torch.cuda.set_device(args.gpu)
-                model.cuda(args.gpu)
                 # When using a single GPU per process and per
                 # DistributedDataParallel, we need to divide the batch size
                 # ourselves based on the total number of GPUs of the current node.
@@ -256,30 +268,13 @@ def main_worker(gpu, args):
                 args.workers = int((args.workers + args.ngpus_per_node - 1) / args.ngpus_per_node)
                 model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
             else:
-                model.cuda()
                 # DistributedDataParallel will divide and allocate batch_size to all
                 # available GPUs if device_ids are not set
                 model = torch.nn.parallel.DistributedDataParallel(model)
-    elif args.gpu is not None and torch.cuda.is_available():
-        torch.cuda.set_device(args.gpu)
-        model = model.cuda(args.gpu)
-    elif torch.backends.mps.is_available():
+    else:
         device = torch.device("mps")
         model = model.to(device)
-    else:
-        # DataParallel will divide and allocate batch_size to all available GPUs
-        model = torch.nn.DataParallel(model).cuda()
 
-    if torch.cuda.is_available():
-        if args.gpu:
-            device = torch.device('cuda:{}'.format(args.gpu))
-        else:
-            device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-    
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.AdamW(
         [
@@ -369,16 +364,15 @@ def main_worker(gpu, args):
         train_sampler = None
         val_sampler = None
 
-    mixup = v2.MixUp(alpha=0.2, num_classes=1000)
-
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
-        collate_fn=lambda batch: mixup(*torch.utils.data.default_collate(batch)), drop_last=True)
+        collate_fn=collate, drop_last=True, multiprocessing_context='spawn')
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True, sampler=val_sampler)
+        num_workers=args.workers, pin_memory=True, sampler=val_sampler,
+        multiprocessing_context='spawn')
 
     warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
@@ -425,7 +419,10 @@ def main_worker(gpu, args):
     # weights without the prefix.
     print('Compiling model...')
     original_model = model
-    model = torch.compile(original_model)
+
+    # Inductor doesn't support MPS yet (https://github.com/pytorch/pytorch/issues/125254)
+    model = torch.compile(
+        original_model, backend="aot_eager" if device.type == 'mps' else "inductor")
 
     if args.evaluate:
         # evaluate on validation set.
@@ -547,14 +544,12 @@ def validate(val_loader, model, criterion, step, args):
             end = time.time()
             for i, (images, target) in enumerate(loader):
                 i = base_progress + i
-                if args.gpu is not None and torch.cuda.is_available():
+                if torch.cuda.is_available():
                     images = images.cuda(args.gpu, non_blocking=True)
-                if torch.backends.mps.is_available():
+                    target = target.cuda(args.gpu, non_blocking=True)
+                elif torch.backends.mps.is_available():
                     images = images.to('mps')
                     target = target.to('mps')
-                if torch.cuda.is_available():
-                    target = target.cuda(args.gpu, non_blocking=True)
-
                 for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
                     # compute output
                     output = model(img)
@@ -595,7 +590,7 @@ def validate(val_loader, model, criterion, step, args):
                                  range(len(val_loader.sampler) * args.world_size, len(val_loader.dataset)))
         aux_val_loader = torch.utils.data.DataLoader(
             aux_val_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=True)
+            num_workers=args.workers, pin_memory=True, multiprocessing_context='spawn')
         run_validate(aux_val_loader, len(val_loader))
 
     progress.display_summary()
