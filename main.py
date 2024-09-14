@@ -30,6 +30,9 @@ import torchvision.models as models
 from torchvision.transforms import v2
 from torch.utils.data import Subset
 
+import unit_scaling as uu
+
+from mup_vit import MupVisionTransformer
 from simple_vit import SimpleVisionTransformer
 from transforms import TFInceptionCrop, RandAugment17
 
@@ -43,6 +46,7 @@ parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
                     help='path to dataset (default: imagenet)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
+parser.add_argument('--parameterization', default='sp', type=str, choices=['sp', 'mup'])
 parser.add_argument('--hidden-dim', default=384, type=int, metavar='N',
                     help='Embedding dimension of the ViT (default: 384)')
 parser.add_argument('--input-resolution', default=224, type=int, metavar='RES',
@@ -86,6 +90,8 @@ parser.add_argument('--decoupled-weight-decay', default=True,
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
+parser.add_argument('--grad-clip-norm', type=float, default=1.0,
+                    help="Gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
                     help="Switch back to torchvision's RandomResizedCrop(), "
                          'which actually improves the model')
@@ -234,21 +240,31 @@ def main_worker(gpu, args):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
-    model = SimpleVisionTransformer(
-        image_size=args.input_resolution,
-        patch_size=args.patch_size,
-        num_layers=args.num_layers,
-        num_heads=args.num_heads,
-        hidden_dim=args.hidden_dim,
-        mlp_dim=args.hidden_dim * 4,
-        posemb=args.posemb,
-        representation_size=args.representation_size,
-        pool_type=args.pool_type,
-        register=args.register,
-    )
-
-    wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
-    non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
+    if args.parameterization == 'sp':
+        model = SimpleVisionTransformer(
+            image_size=args.input_resolution,
+            patch_size=args.patch_size,
+            num_layers=args.num_layers,
+            num_heads=args.num_heads,
+            hidden_dim=args.hidden_dim,
+            mlp_dim=args.hidden_dim * 4,
+            posemb=args.posemb,
+            representation_size=args.representation_size,
+            pool_type=args.pool_type,
+            register=args.register,
+        )
+    else:
+        # mlp_dim & representation_size not supported yet
+        model = MupVisionTransformer(
+            image_size=args.input_resolution,
+            patch_size=args.patch_size,
+            num_layers=args.num_layers,
+            num_heads=args.num_heads,
+            hidden_dim=args.hidden_dim,
+            posemb=args.posemb,
+            pool_type=args.pool_type,
+            register=args.register,
+        )
 
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
         print('using CPU, this will be slow')
@@ -279,16 +295,38 @@ def main_worker(gpu, args):
         device = torch.device("mps")
         model = model.to(device)
 
-    if args.decoupled_weight_decay:
-        args.weight_decay /= args.lr
-    criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.AdamW(
-        [
-            {"params": wd_params, "weight_decay": args.weight_decay},
-            {"params": non_wd_params, "weight_decay": 0.},
-        ],
-        lr=args.lr,
-    )
+    if torch.cuda.is_available():
+        if args.gpu:
+            device = torch.device('cuda:{}'.format(args.gpu))
+        else:
+            device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    
+    if args.parameterization == 'sp':
+        criterion = nn.CrossEntropyLoss()
+        wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
+        non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
+        if args.decoupled_weight_decay:
+            args.weight_decay /= args.lr
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": wd_params, "weight_decay": args.weight_decay},
+                {"params": non_wd_params, "weight_decay": 0.},
+            ],
+            lr=args.lr,
+        )
+    else:
+        criterion = uu.CrossEntropyLoss()
+        optimizer = uu.optim.AdamW(
+            params=model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            independent_weight_decay=args.decoupled_weight_decay,
+        )
+    criterion = criterion.to(device)
 
     # Data loading code
     if args.fake_data:
@@ -301,9 +339,12 @@ def main_worker(gpu, args):
         train_dataset = datasets.FakeData(1281167, input_shape, 1000, transform)
         val_dataset = datasets.FakeData(50000, input_shape, 1000, transform)
     else:
-        value_range = v2.Normalize(
-            mean=[0.5] * 3,
-            std=[0.5] * 3)
+        if args.parameterization == 'sp':
+            mean = std = [0.5] * 3
+        else:
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+        value_range = v2.Normalize(mean=mean, std=std)
 
         cutout_const = 40
         translate_const = 100
@@ -491,7 +532,7 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
         top5.update(step_acc5, images.size(0))
 
         # do SGD step
-        l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
         optimizer.step()
         optimizer.zero_grad()
 
