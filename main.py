@@ -79,8 +79,12 @@ parser.add_argument("--warmup", default=10000, type=int,
                     help="Number of steps to warmup for.")
 parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
-parser.add_argument('--wd', '--weight-decay', default=0.1, type=float,
-                    metavar='W', help='weight decay (default: 0.1)',
+parser.add_argument('--decoupled-weight-decay', default=True,
+                    action=argparse.BooleanOptionalAction,
+                    help='Run weight decay as it is w/o multiplying by LR. '
+                         'See https://fabian-sp.github.io/posts/2024/02/decoupling/')
+parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
+                    metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
 parser.add_argument('--torchvision-inception-crop', action='store_true',
                     help="Switch back to torchvision's RandomResizedCrop(), "
@@ -275,6 +279,8 @@ def main_worker(gpu, args):
         device = torch.device("mps")
         model = model.to(device)
 
+    if args.decoupled_weight_decay:
+        args.weight_decay /= args.lr
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.AdamW(
         [
