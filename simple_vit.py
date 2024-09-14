@@ -67,7 +67,6 @@ class Encoder(nn.Module):
 
     def __init__(
         self,
-        seq_length: int,
         num_layers: int,
         num_heads: int,
         hidden_dim: int,
@@ -161,7 +160,6 @@ class SimpleVisionTransformer(nn.Module):
             self.pos_embedding = None
 
         self.encoder = Encoder(
-            seq_length,
             num_layers,
             num_heads,
             hidden_dim,
