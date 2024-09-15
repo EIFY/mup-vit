@@ -31,6 +31,7 @@ from torchvision.transforms import v2
 from torch.utils.data import Subset
 
 import unit_scaling as uu
+import unit_scaling.scale as S
 
 from mup_vit import MupVisionTransformer
 from simple_vit import SimpleVisionTransformer
@@ -254,13 +255,14 @@ def main_worker(gpu, args):
             register=args.register,
         )
     else:
-        # mlp_dim & representation_size not supported yet
+        # representation_size not supported yet
         model = MupVisionTransformer(
             image_size=args.input_resolution,
             patch_size=args.patch_size,
             num_layers=args.num_layers,
             num_heads=args.num_heads,
             hidden_dim=args.hidden_dim,
+            mlp_dim=args.hidden_dim * 4,
             posemb=args.posemb,
             pool_type=args.pool_type,
             register=args.register,
@@ -306,7 +308,7 @@ def main_worker(gpu, args):
         device = torch.device("cpu")
     
     if args.parameterization == 'sp':
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(reduction='sum')
         wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
         non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
         if args.decoupled_weight_decay:
@@ -319,7 +321,7 @@ def main_worker(gpu, args):
             lr=args.lr,
         )
     else:
-        criterion = uu.CrossEntropyLoss()
+        criterion = uu.CrossEntropyLoss(reduction='sum')
         optimizer = uu.optim.AdamW(
             params=model.parameters(),
             lr=args.lr,
@@ -514,16 +516,19 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
             output = model(img)
             loss = criterion(output, trt)
 
-            # measure accuracy and record loss
+            # measure accuracy
             acc1, acc5 = accuracy(output, trt, topk=(1, 5), class_prob=True)
-            step_loss += loss.item()
             step_acc1 += acc1[0].item()
             step_acc5 += acc5[0].item()
 
-            # compute gradient
-            (loss / args.accum_freq).backward()
+            # compute gradient and record loss
+            if args.parameterization == 'sp':
+                loss = loss / args.batch_size
+            else:
+                loss = S.scale_fwd(loss, 1 / args.batch_size)
+            step_loss += loss.item()
+            loss.backward()
 
-        step_loss /= args.accum_freq
         step_acc1 /= args.accum_freq
         step_acc5 /= args.accum_freq
 
@@ -604,7 +609,7 @@ def validate(val_loader, model, criterion, step, args):
 
                     # measure accuracy and record loss
                     acc1, acc5 = accuracy(output, trt, topk=(1, 5))
-                    losses.update(loss.item(), img.size(0))
+                    losses.update(loss.item() / img.size(0), img.size(0))
                     top1.update(acc1[0].item(), img.size(0))
                     top5.update(acc5[0].item(), img.size(0))
                     
