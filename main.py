@@ -434,7 +434,7 @@ def main_worker(gpu, args):
         # evaluate on validation set.
         # I got RuntimeError: Found a custom (non-ATen) operator that either mutates or its inputs: aten::record_stream..
         # if I use the compiled model, so for now I pass in original_model instead.
-        validate(val_loader, original_model, criterion, args.start_step, args)
+        validate(val_loader, original_model, criterion, args.start_step, device, args)
         return
 
     train(train_loader, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args)
@@ -524,7 +524,7 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
 
         if step % args.log_steps == 0 or step == total_steps:
 
-            acc1 = validate(val_loader, original_model, criterion, step, args)
+            acc1 = validate(val_loader, original_model, criterion, step, device, args)
 
             # remember best acc@1 and save checkpoint
             is_best = acc1 > best_acc1
@@ -542,7 +542,7 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
         scheduler.step()
 
 
-def validate(val_loader, model, criterion, step, args):
+def validate(val_loader, model, criterion, step, device, args):
 
     def run_validate(loader, base_progress=0):
         with torch.no_grad():
@@ -550,12 +550,9 @@ def validate(val_loader, model, criterion, step, args):
             end = time.time()
             for i, (images, target) in enumerate(loader):
                 i = base_progress + i
-                if torch.cuda.is_available():
-                    images = images.cuda(args.gpu, non_blocking=True)
-                    target = target.cuda(args.gpu, non_blocking=True)
-                elif torch.backends.mps.is_available():
-                    images = images.to('mps')
-                    target = target.to('mps')
+                # move data to the same device as model
+                images = images.to(device, non_blocking=True)
+                target = target.to(device, non_blocking=True)
                 for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
                     # compute output
                     output = model(img)
