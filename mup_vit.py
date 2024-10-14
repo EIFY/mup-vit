@@ -24,63 +24,16 @@ class MLP(nn.Module):
         self,
         hidden_size: int,
         intermediate_size: int,
-        constraint: Optional[str] = "to_output_scale",
     ) -> None:
         super().__init__()
         self.ratio = intermediate_size / hidden_size
-        self.linear_1 = uu.Linear(hidden_size, intermediate_size, constraint=constraint)
-        self.linear_2 = uu.Linear(intermediate_size, hidden_size, constraint=constraint)
+        self.linear_1 = uu.Linear(hidden_size, intermediate_size, constraint=None)
+        self.linear_2 = uu.Linear(intermediate_size, hidden_size, constraint=None)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        input = S.scale_bwd(input, 1 / math.sqrt(self.ratio))
         z = self.linear_1(input)
-        z = S.scale_bwd(z, 1 / 1.20)
         z = U.gelu(z)
-        z = S.scale_fwd(z, 1 / 1.15)
-        z = S.scale_bwd(z, math.sqrt(self.ratio))
         return self.linear_2(z)
-
-
-class MHSA(nn.Module):
-    """A **unit-scaled** implementation of a multi-head self-attention layer.
-
-    Warning: using `constraint=None` here will likely give incorrect gradients.
-
-    Args:
-        hidden_size (int): the hidden dimension size of the input.
-        heads (int): the number of attention heads.
-        is_causal (bool): causal masking (for non-padded sequences).
-        dropout_p (float, optional): the probability of the post-softmax dropout.
-    """
-
-    def __init__(
-        self,
-        hidden_size: int,
-        heads: int,
-        is_causal: bool,
-        dropout_p: float = 0.0,
-        mult: float = 1.0,
-        constraint: Optional[str] = "to_output_scale",
-    ) -> None:
-        super().__init__()
-        self.heads = heads
-        self.dropout_p = dropout_p
-        self.is_causal = is_causal
-        self.mult = mult
-        self.linear_qkv = uu.Linear(hidden_size, 3 * hidden_size, constraint=constraint)
-        self.linear_o = uu.Linear(hidden_size, hidden_size, constraint=constraint)
-        self.constraint = constraint
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        input = S.scale_bwd(input, 3 / 5)
-        q_k_v = self.linear_qkv(input)
-        q, k, v = einops.rearrange(q_k_v, "b s (z h d) -> z b h s d", h=self.heads, z=3)
-        qkv = U.scaled_dot_product_attention(
-            q, k, v, dropout_p=self.dropout_p, is_causal=self.is_causal, mult=self.mult
-        )
-        qkv = S.scale_bwd(qkv, 5 / 3)
-        qkv = einops.rearrange(qkv, "b h s d -> b s (h d)")
-        return self.linear_o(qkv)
 
 
 class EncoderBlock(nn.Module):
@@ -91,7 +44,7 @@ class EncoderBlock(nn.Module):
         num_heads: int,
         attn_tau: float,
         mlp_tau: float,
-        attn = MHSA,
+        attn = uu.MHSA,
         norm_layer = uu.LayerNorm,
     ) -> None:
         super().__init__()
@@ -138,7 +91,7 @@ class MupVisionTransformer(nn.Module):
         posemb: str = "sincos2d",
         pool_type: str = "gap",
         register: int = 0,
-        attn = MHSA,
+        attn = uu.MHSA,
         norm_layer = uu.LayerNorm,
     ):
         super().__init__()
