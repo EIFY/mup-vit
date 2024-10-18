@@ -1,8 +1,9 @@
 # Modified from https://github.com/pytorch/examples/blob/main/imagenet/main.py
 
 import argparse
-import os
+import functools
 import math
+import os
 import random
 import shutil
 import time
@@ -89,9 +90,9 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
 parser.add_argument('--torchvision-inception-crop', action='store_true',
                     help="Switch back to torchvision's RandomResizedCrop(), "
                          'which actually improves the model')
-parser.add_argument('--mixup', default=True,
-                    action=argparse.BooleanOptionalAction,
-                    help='Use MixUp (default: True)')
+parser.add_argument('--mixup-alpha', default=0.2, type=float,
+                    help='Beta distribution shape parameter for the MixUp (default: 0.2). '
+                         'Use 0.0 to turn MixUp off.')
 parser.add_argument('--randaug', default=True,
                     action=argparse.BooleanOptionalAction,
                     help='Use RandAug (default: True)')
@@ -144,9 +145,7 @@ def broadcast_object(args, obj, src=0):
         return objects[0]
 
 
-mixup = v2.MixUp(alpha=0.2, num_classes=1000)
-
-def collate(batch):
+def collate(batch, mixup):
     return mixup(*torch.utils.data.default_collate(batch))
 
 
@@ -378,10 +377,15 @@ def main_worker(gpu, args):
         train_sampler = None
         val_sampler = None
 
+    collate_fn = None
+    if args.mixup_alpha:
+        mixup = v2.MixUp(alpha=args.mixup_alpha, num_classes=1000)
+        collate_fn = functools.partial(collate, mixup=mixup)
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
-        collate_fn=collate if args.mixup else None, drop_last=True, multiprocessing_context='spawn')
+        collate_fn=collate_fn, drop_last=True, multiprocessing_context='spawn')
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
@@ -482,7 +486,7 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
             loss = criterion(output, trt)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, trt, topk=(1, 5), class_prob=args.mixup)
+            acc1, acc5 = accuracy(output, trt, topk=(1, 5), class_prob=bool(args.mixup_alpha))
             step_loss += loss.item()
             step_acc1 += acc1[0].item()
             step_acc5 += acc5[0].item()
