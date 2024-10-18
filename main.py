@@ -89,6 +89,12 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
 parser.add_argument('--torchvision-inception-crop', action='store_true',
                     help="Switch back to torchvision's RandomResizedCrop(), "
                          'which actually improves the model')
+parser.add_argument('--mixup', default=True,
+                    action=argparse.BooleanOptionalAction,
+                    help='Use MixUp (default: True)')
+parser.add_argument('--randaug', default=True,
+                    action=argparse.BooleanOptionalAction,
+                    help='Use RandAug (default: True)')
 parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
@@ -104,7 +110,7 @@ parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
 parser.add_argument('--dist-backend', default='nccl', type=str,
                     help='distributed backend')
 parser.add_argument('--seed', default=None, type=int,
-                    help='seed for initializing training. ')
+                    help='seed for initializing training.')
 parser.add_argument('--gpu', default=None, type=int,
                     help='GPU id to use.')
 parser.add_argument('--multiprocessing-distributed', action='store_true',
@@ -337,17 +343,19 @@ def main_worker(gpu, args):
         randaug = RandAugment17(2, 10, num_magnitude_bins=MAX_LEVEL + 1, fill=[128] * 3)
         inception_crop = v2.RandomResizedCrop if args.torchvision_inception_crop else TFInceptionCrop
 
-        train_dataset = datasets.ImageNet(
-            args.data,
-            split='train',
-            transform=v2.Compose([
-                v2.ToImage(),
-                inception_crop(args.input_resolution, scale=(0.05, 1.0)),
-                v2.RandomHorizontalFlip(),
-                randaug,
-                v2.ToDtype(torch.float32, scale=True),
-                value_range,
-            ]))
+        transform = [
+            v2.ToImage(),
+            inception_crop(args.input_resolution, scale=(0.05, 1.0)),
+            v2.RandomHorizontalFlip()
+        ]
+        if args.randaug:
+            transform.append(randaug)
+        transform.extend([
+            v2.ToDtype(torch.float32, scale=True),
+            value_range
+        ])
+
+        train_dataset = datasets.ImageNet(args.data, split='train', transform=v2.Compose(transform))
 
         val_dataset = datasets.ImageNet(
             args.data,
@@ -373,7 +381,7 @@ def main_worker(gpu, args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
-        collate_fn=collate, drop_last=True, multiprocessing_context='spawn')
+        collate_fn=collate if args.mixup else None, drop_last=True, multiprocessing_context='spawn')
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
@@ -474,7 +482,7 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
             loss = criterion(output, trt)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, trt, topk=(1, 5), class_prob=True)
+            acc1, acc5 = accuracy(output, trt, topk=(1, 5), class_prob=args.mixup)
             step_loss += loss.item()
             step_acc1 += acc1[0].item()
             step_acc5 += acc5[0].item()
