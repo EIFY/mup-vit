@@ -31,10 +31,12 @@ import torchvision.models as models
 from torchvision.transforms import v2
 from torch.utils.data import Subset
 
+import schedulefree
+import wandb
+
 from simple_vit import SimpleVisionTransformer
 from transforms import TFInceptionCrop, RandAugment17
 
-import wandb
 
 # "(...)/python3.10/site-packages/torch/_inductor/compile_fx.py:140: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance."
 torch.set_float32_matmul_precision('high')
@@ -67,6 +69,8 @@ parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
                     help='eval and log every N steps')
+parser.add_argument('--log-epoch', nargs='*', default=[], type=int,
+                    help='eval and log at the specified epochs.')
 parser.add_argument('--start-step', default=0, type=int, metavar='N',
                     help='manual step number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=256, type=int,
@@ -76,10 +80,19 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
+parser.add_argument('--schedule-free', action='store_true',
+                    help='Use schedule-free AdamW optimizer (https://arxiv.org/abs/2405.15682).')
 parser.add_argument("--warmup", default=10000, type=int,
                     help="Number of steps to warmup for.")
 parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--beta1', default=0.9, type=float,
+                    help='beta1 for AdamW')
+parser.add_argument('--beta2', default=0.999, type=float,
+                    help='beta2 for AdamW')
+parser.add_argument('--polynomial-weighting-power', default=0.0, type=float, metavar='r',
+                    help='Use polynomial weighting in the average with power r '
+                         'for schedule-free AdamW (default 0.0)')
 parser.add_argument('--decoupled-weight-decay', default=True,
                     action=argparse.BooleanOptionalAction,
                     help='Run weight decay as it is w/o multiplying by LR. '
@@ -287,13 +300,26 @@ def main_worker(gpu, args):
     if args.decoupled_weight_decay:
         args.weight_decay /= args.lr
     criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.AdamW(
-        [
-            {"params": wd_params, "weight_decay": args.weight_decay},
-            {"params": non_wd_params, "weight_decay": 0.},
-        ],
-        lr=args.lr,
-    )
+
+    params = [
+        {"params": wd_params, "weight_decay": args.weight_decay},
+        {"params": non_wd_params, "weight_decay": 0.},
+    ]
+
+    if args.schedule_free:
+        optimizer = schedulefree.AdamWScheduleFree(
+            params,
+            lr=args.lr,
+            betas=(args.beta1, args.beta2),
+            warmup_steps=args.warmup,
+            r=args.polynomial_weighting_power,
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            params,
+            lr=args.lr,
+            betas=(args.beta1, args.beta2)
+        )
 
     # Data loading code
     if args.fake_data:
@@ -369,6 +395,8 @@ def main_worker(gpu, args):
 
     n = len(train_dataset)
     total_steps = round(n * args.epochs / args.batch_size)
+    args.specified_steps = {round(n * epoch / args.batch_size) for epoch in args.log_epoch}
+    args.specified_steps.add(total_steps)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -392,9 +420,12 @@ def main_worker(gpu, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
         multiprocessing_context='spawn')
 
-    warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
-    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
-    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
+    if args.schedule_free:
+        scheduler = None
+    else:
+        warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
+        scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -413,7 +444,8 @@ def main_worker(gpu, args):
                 best_acc1 = best_acc1.to(args.gpu)
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
+            if not args.schedule_free:
+                scheduler.load_state_dict(checkpoint['scheduler'])
             print("=> loaded checkpoint '{}' (step {})"
                   .format(args.resume, checkpoint['step']))
         else:
@@ -528,30 +560,38 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
                     "batch_time": batch_time.val,
                     "samples_per_second": samples_per_second,
                     "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                    "lr": scheduler.get_last_lr()[0],
                     "l2_grads": l2_grads.item(),
                     "l2_params": math.sqrt(l2_params)
                 }
+                if scheduler:
+                    log_data["lr"] = scheduler.get_last_lr()[0]
                 wandb.log(log_data, step=step)
 
-        if step % args.log_steps == 0 or step == total_steps:
-
-            acc1 = validate(val_loader, original_model, criterion, step, device, args)
+        if step % args.log_steps == 0 or step in args.specified_steps:
+            if args.schedule_free:
+                optimizer.eval()
+                acc1 = validate(val_loader, original_model, criterion, step, device, args)
+                optimizer.train()
+            else:
+                acc1 = validate(val_loader, original_model, criterion, step, device, args)
 
             # remember best acc@1 and save checkpoint
             is_best = acc1 > best_acc1
             best_acc1 = max(acc1, best_acc1)
 
             if is_primary(args):
-                save_checkpoint({
+                ckpt = {
                     'step': step,
                     'state_dict': original_model.state_dict(),
                     'best_acc1': best_acc1,
                     'optimizer' : optimizer.state_dict(),
-                    'scheduler' : scheduler.state_dict()
-                }, is_best, args.checkpoint_path)
+                }
+                if scheduler:
+                    ckpt['scheduler'] = scheduler.state_dict()
+                save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
 
-        scheduler.step()
+        if scheduler:
+            scheduler.step()
 
 
 def validate(val_loader, model, criterion, step, device, args):
@@ -621,11 +661,13 @@ def validate(val_loader, model, criterion, step, device, args):
     return top1.avg
 
 
-def save_checkpoint(state, is_best, path, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, path, filename='checkpoint.pth.tar', step=None):
     filename = os.path.join(path, filename)
     torch.save(state, filename)
     if is_best:
         shutil.copyfile(filename, os.path.join(path, 'model_best.pth.tar'))
+    if step is not None:
+        shutil.copyfile(filename, os.path.join(path, f'model_step_{step}.pth.tar'))
 
 class Summary(Enum):
     NONE = 0
