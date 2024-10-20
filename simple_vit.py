@@ -126,6 +126,7 @@ class SimpleVisionTransformer(nn.Module):
         posemb: str = "sincos2d",
         representation_size: Optional[int] = None,
         pool_type: str = "gap",
+        summary_size: Optional[int] = None,
         register: int = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
     ):
@@ -141,12 +142,6 @@ class SimpleVisionTransformer(nn.Module):
         self.representation_size = representation_size
         self.pool_type = pool_type
         self.norm_layer = norm_layer
-        self.register = register + (pool_type == 'tok')  # [CLS] token is just another register
-        if self.register == 1:
-            self.register_buffer("reg", torch.zeros(1, 1, hidden_dim))
-        elif self.register > 1:  # Random initialization needed to break the symmetry
-            self.reg = self._learned_embeddings(self.register)
-
         self.conv_proj = nn.Conv2d(
             in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
         )
@@ -159,6 +154,28 @@ class SimpleVisionTransformer(nn.Module):
             self.pos_embedding = self._learned_embeddings(seq_length)
         else:
             self.pos_embedding = None
+
+        if summary_size:
+            s = h
+            sizes = []
+            while s > 1:
+                s, mod = divmod(s, summary_size)
+                assert not mod, "Number of patches along height/width must be powers of summary size for now."
+                sizes.append(s)
+            sizes.reverse()
+            self.register = sum(s ** 2 for s in sizes)
+            if posemb == "sincos2d":
+                self.register_buffer("reg", torch.cat([posemb_sincos_2d(h=s, w=s, dim=hidden_dim) for s in sizes], dim=0))
+            elif posemb == "learn":
+                self.reg = self._learned_embeddings(self.register)
+            else:
+                self.register_buffer("reg", torch.zeros(1, self.register, hidden_dim))
+        else:
+            self.register = register + (pool_type == 'tok')  # [CLS] token is just another register
+            if self.register == 1:
+                self.register_buffer("reg", torch.zeros(1, 1, hidden_dim))
+            elif self.register > 1:  # Random initialization needed to break the symmetry
+                self.reg = self._learned_embeddings(self.register)
 
         self.encoder = Encoder(
             num_layers,
