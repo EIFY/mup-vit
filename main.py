@@ -62,6 +62,9 @@ parser.add_argument('--representation-size', default=None, type=int, metavar='N'
                     help='Size of the MLP classification head hidden layer, '
                          "defaults to --hidden-dim. No effect if --mlp-head isn't set")
 parser.add_argument('--pool-type', default='gap', type=str, choices=['gap', 'tok'])
+parser.add_argument('--summary-size', default=None, type=int, metavar='S',
+                    help='A summary token is responsible for (S, S) tokens of the level below. '
+                         'If specified, --register is ignored.')
 parser.add_argument('--register', default=0, type=int, metavar='N',
                     help='Number of registers (additional tokens), see '
                          'https://arxiv.org/abs/2309.16588')
@@ -262,6 +265,7 @@ def main_worker(gpu, args):
         posemb=args.posemb,
         representation_size=args.representation_size,
         pool_type=args.pool_type,
+        summary_size=args.summary_size,
         register=args.register,
     )
 
