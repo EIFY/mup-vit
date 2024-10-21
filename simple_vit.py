@@ -22,6 +22,30 @@ def posemb_sincos_2d(h, w, dim, temperature: int = 10000, dtype = torch.float32)
     return pe.type(dtype)
 
 
+def generate_fractal_mask(sizes):
+    summary_size = sizes[1]
+    sizes.append(summary_size * sizes[-1])
+    mask = torch.block_diag(*[torch.ones(s ** 2, s ** 2) for s in sizes])
+    sizes.pop()
+    offset = 0
+    for i, s in enumerate(sizes):
+        factor = summary_size
+        next_offset = s ** 2
+        next_s = s * summary_size
+        for _ in range(len(sizes) - i):
+            for r_i in range(s):
+                for c_i in range(s):
+                    index = offset + r_i * s + c_i
+                    for r_j in range(r_i * factor, (r_i + 1) * factor):
+                        start = offset + next_offset + r_j * next_s + c_i * factor
+                        mask[index, start:start + factor] = mask[start:start + factor, index] = 1
+            factor *= summary_size
+            next_offset += next_s ** 2
+            next_s *= summary_size
+        offset += s ** 2
+    return mask.bool()
+
+
 class EncoderBlock(nn.Module):
     """Transformer encoder block."""
 
@@ -51,10 +75,10 @@ class EncoderBlock(nn.Module):
         nn.init.uniform_(self.self_attention.in_proj_weight, -bound, bound)
         nn.init.uniform_(self.self_attention.out_proj.weight, -bound, bound)
 
-    def forward(self, input: torch.Tensor):
+    def forward(self, input: torch.Tensor, attn_mask: Optional[torch.Tensor]):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
         x = self.ln_1(input)
-        x, _ = self.self_attention(x, x, x, need_weights=False)
+        x, _ = self.self_attention(x, x, x, need_weights=False, attn_mask=attn_mask)
         x = self.dropout(x)
         x = x + input
 
@@ -78,22 +102,25 @@ class Encoder(nn.Module):
     ):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
-        layers: OrderedDict[str, nn.Module] = OrderedDict()
-        for i in range(num_layers):
-            layers[f"encoder_layer_{i}"] = EncoderBlock(
+        layers = [
+            EncoderBlock(
                 num_heads,
                 hidden_dim,
                 mlp_dim,
                 dropout,
                 attention_dropout,
                 norm_layer,
-            )
-        self.layers = nn.Sequential(layers)
+            ) for i in range(num_layers)
+        ]
+        self.layers = nn.ModuleList(layers)
         self.ln = norm_layer(hidden_dim)
 
-    def forward(self, input: torch.Tensor):
+    def forward(self, input: torch.Tensor, attn_mask: Optional[torch.Tensor]):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
-        return self.ln(self.layers(self.dropout(input)))
+        x = self.dropout(input)
+        for layer in self.layers:
+            x = layer(x, attn_mask)
+        return self.ln(x)
 
 
 def jax_lecun_normal(layer, fan_in):
@@ -128,6 +155,7 @@ class SimpleVisionTransformer(nn.Module):
         pool_type: str = "gap",
         summary_size: Optional[int] = None,
         register: int = 0,
+        fractal_mask: bool = False,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
     ):
         super().__init__()
@@ -176,6 +204,12 @@ class SimpleVisionTransformer(nn.Module):
                 self.register_buffer("reg", torch.zeros(1, 1, hidden_dim))
             elif self.register > 1:  # Random initialization needed to break the symmetry
                 self.reg = self._learned_embeddings(self.register)
+
+        if fractal_mask:
+            assert summary_size
+            self.register_buffer("fractal_mask", generate_fractal_mask(sizes))
+        else:
+            self.fractal_mask = None
 
         self.encoder = Encoder(
             num_layers,
@@ -243,7 +277,7 @@ class SimpleVisionTransformer(nn.Module):
         if self.register:
             n = x.shape[0]
             x = torch.cat([torch.tile(self.reg, (n, 1, 1)), x], dim=1)
-        x = self.encoder(x)
+        x = self.encoder(x, self.fractal_mask)
         if self.pool_type == 'tok':
             x = x[:, 0]
         else:
