@@ -68,6 +68,8 @@ parser.add_argument('--summary-size', default=None, type=int, metavar='S',
 parser.add_argument('--register', default=0, type=int, metavar='N',
                     help='Number of registers (additional tokens), see '
                          'https://arxiv.org/abs/2309.16588')
+parser.add_argument('--fractal-mask', action='store_true',
+                    help='Apply fractal mask to the attention weight. --summary-size must be set.')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
@@ -267,6 +269,7 @@ def main_worker(gpu, args):
         pool_type=args.pool_type,
         summary_size=args.summary_size,
         register=args.register,
+        fractal_mask=args.fractal_mask,
     )
 
     wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
