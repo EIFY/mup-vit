@@ -5,6 +5,8 @@ from functools import partial
 from typing import Callable, Optional
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.attention import flex_attention
 from torchvision.models.vision_transformer import MLPBlock
 
 
@@ -45,6 +47,43 @@ def generate_fractal_mask(sizes):
     return mask.bool()
 
 
+class FlexAttention(nn.Module):
+    """Minimum module to run flex_attention w/ block_mask."""
+
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.in_proj_weight = nn.parameter.Parameter(torch.empty(3 * embed_dim, embed_dim))
+        self.in_proj_bias = nn.parameter.Parameter(torch.empty(3 * embed_dim))
+        self.out_proj_weight = nn.parameter.Parameter(torch.empty(embed_dim, embed_dim))
+        self.out_proj_bias = nn.parameter.Parameter(torch.empty(embed_dim))
+
+        # big_vision parameter initialization
+        bound = math.sqrt(3 / embed_dim)
+        nn.init.uniform_(self.in_proj_weight, -bound, bound)
+        nn.init.uniform_(self.out_proj_weight, -bound, bound)
+        nn.init.constant_(self.in_proj_bias, 0.0)
+        nn.init.constant_(self.out_proj_bias, 0.0)
+
+    def forward(self, input, block_mask):
+        b, s, d = input.shape
+        qkv = F.linear(input, self.in_proj_weight, self.in_proj_bias)
+        qkv = qkv.reshape((b, s, 3, self.num_heads, self.head_dim))
+        # (b, s, 3, nh, hd) -> (3, b, nh, s, hd)
+        q, k, v = qkv.permute(2, 0, 3, 1, 4)
+        out = flex_attention.flex_attention(q, k, v, block_mask=block_mask)
+        # (b, nh, s, hd) -> (b, s, nh, hd)
+        out = out.transpose(1, 2).reshape((b, s, d))
+        out = F.linear(out, self.out_proj_weight, self.out_proj_bias)
+        return out
+
+
 class EncoderBlock(nn.Module):
     """Transformer encoder block."""
 
@@ -54,7 +93,6 @@ class EncoderBlock(nn.Module):
         hidden_dim: int,
         mlp_dim: int,
         dropout: float,
-        attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
     ):
         super().__init__()
@@ -62,22 +100,17 @@ class EncoderBlock(nn.Module):
 
         # Attention block
         self.ln_1 = norm_layer(hidden_dim)
-        self.self_attention = nn.MultiheadAttention(hidden_dim, num_heads, dropout=attention_dropout, batch_first=True)
+        self.self_attention = FlexAttention(hidden_dim, num_heads)
         self.dropout = nn.Dropout(dropout)
 
         # MLP block
         self.ln_2 = norm_layer(hidden_dim)
         self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout)
 
-        # Fix init discrepancy between nn.MultiheadAttention and that of big_vision
-        bound = math.sqrt(3 / hidden_dim)
-        nn.init.uniform_(self.self_attention.in_proj_weight, -bound, bound)
-        nn.init.uniform_(self.self_attention.out_proj.weight, -bound, bound)
-
-    def forward(self, input: torch.Tensor, attn_mask: Optional[torch.Tensor]):
+    def forward(self, input: torch.Tensor, block_mask: Optional[torch.Tensor]):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
         x = self.ln_1(input)
-        x, _ = self.self_attention(x, x, x, need_weights=False, attn_mask=attn_mask)
+        x = self.self_attention(x, block_mask=block_mask)
         x = self.dropout(x)
         x = x + input
 
@@ -96,7 +129,6 @@ class Encoder(nn.Module):
         hidden_dim: int,
         mlp_dim: int,
         dropout: float,
-        attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
     ):
         super().__init__()
@@ -107,7 +139,6 @@ class Encoder(nn.Module):
                 hidden_dim,
                 mlp_dim,
                 dropout,
-                attention_dropout,
                 norm_layer,
             ) for i in range(num_layers)
         ]
@@ -147,7 +178,6 @@ class SimpleVisionTransformer(nn.Module):
         hidden_dim: int,
         mlp_dim: int,
         dropout: float = 0.0,
-        attention_dropout: float = 0.0,
         num_classes: int = 1000,
         posemb: str = "sincos2d",
         representation_size: Optional[int] = None,
@@ -163,7 +193,6 @@ class SimpleVisionTransformer(nn.Module):
         self.patch_size = patch_size
         self.hidden_dim = hidden_dim
         self.mlp_dim = mlp_dim
-        self.attention_dropout = attention_dropout
         self.dropout = dropout
         self.num_classes = num_classes
         self.representation_size = representation_size
@@ -184,15 +213,15 @@ class SimpleVisionTransformer(nn.Module):
 
         if summary_size:
             s = h
-            sizes = []
+            self.sizes = []
             while s > 1:
                 s, mod = divmod(s, summary_size)
                 assert not mod, "Number of patches along height/width must be powers of summary size for now."
-                sizes.append(s)
-            sizes.reverse()
-            self.register = sum(s ** 2 for s in sizes)
+                self.sizes.append(s)
+            self.sizes.reverse()
+            self.register = sum(s ** 2 for s in self.sizes)
             if posemb == "sincos2d":
-                self.register_buffer("reg", torch.cat([posemb_sincos_2d(h=s, w=s, dim=hidden_dim) for s in sizes], dim=0))
+                self.register_buffer("reg", torch.cat([posemb_sincos_2d(h=s, w=s, dim=hidden_dim) for s in self.sizes], dim=0))
             elif posemb == "learn":
                 self.reg = self._learned_embeddings(self.register)
             else:
@@ -204,19 +233,13 @@ class SimpleVisionTransformer(nn.Module):
             elif self.register > 1:  # Random initialization needed to break the symmetry
                 self.reg = self._learned_embeddings(self.register)
 
-        if fractal_mask:
-            assert summary_size
-            self.register_buffer("fractal_mask", generate_fractal_mask(sizes))
-        else:
-            self.fractal_mask = None
-
+        self.fractal_mask = None
         self.encoder = Encoder(
             num_layers,
             num_heads,
             hidden_dim,
             mlp_dim,
             dropout,
-            attention_dropout,
             norm_layer,
         )
         self.seq_length = seq_length
@@ -242,6 +265,20 @@ class SimpleVisionTransformer(nn.Module):
         if isinstance(self.heads.head, nn.Linear):
             nn.init.zeros_(self.heads.head.weight)
             nn.init.zeros_(self.heads.head.bias)
+
+    def create_block_mask(self, device, block_size):
+        mask = generate_fractal_mask(self.sizes)
+        total_length = self.register + self.seq_length
+        div, mod = divmod(total_length, block_size)
+        # See https://github.com/pytorch/pytorch/issues/137801
+        if mod:
+            padding = (div + 1) * block_size - total_length
+            mask = torch.block_diag(mask, torch.zeros(padding, padding, dtype=torch.bool))
+        mask = mask.to(device)
+        def mask_mod(b, h, q_idx, kv_idx):
+            return mask[q_idx][kv_idx]
+        self.fractal_mask = flex_attention.create_block_mask(
+            mask_mod, B=None, H=None, Q_LEN=total_length, KV_LEN=total_length, device=device, BLOCK_SIZE=block_size)
 
     def _process_input(self, x: torch.Tensor) -> torch.Tensor:
         n, c, h, w = x.shape
