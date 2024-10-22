@@ -70,6 +70,8 @@ parser.add_argument('--register', default=0, type=int, metavar='N',
                          'https://arxiv.org/abs/2309.16588')
 parser.add_argument('--fractal-mask', action='store_true',
                     help='Apply fractal mask to the attention weight. --summary-size must be set.')
+parser.add_argument('--block-size', default=32, type=int,
+                    help='BLOCK_SIZE for the BlockMask for FlexAttention')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
@@ -303,6 +305,13 @@ def main_worker(gpu, args):
     else:
         device = torch.device("mps")
         model = model.to(device)
+
+    # BlockMask can't be saved with register_buffer() so it can't move with the model with to(),
+    # yet it still has to be created on the same device as the model and input. So, we delay its
+    # creation till the destination device is known.
+    if args.fractal_mask:
+        assert args.summary_size
+        model.create_block_mask(device=device, block_size=args.block_size)
 
     if args.decoupled_weight_decay:
         args.weight_decay /= args.lr
