@@ -1,24 +1,9 @@
-import math
-
-from collections import OrderedDict
-from functools import partial
 from typing import Callable, Optional
+
 import torch
 import torch.nn as nn
-from torchvision.models.vision_transformer import MLPBlock
 
-
-# Taken from https://github.com/lucidrains/vit-pytorch, likely ported from https://github.com/google-research/big_vision/
-def posemb_sincos_2d(h, w, dim, temperature: int = 10000, dtype = torch.float32):
-    y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
-    assert (dim % 4) == 0, "feature dimension must be multiple of 4 for sincos emb"
-    omega = torch.arange(dim // 4) / (dim // 4 - 1)
-    omega = 1.0 / (temperature ** omega)
-
-    y = y.flatten()[:, None] * omega[None, :]
-    x = x.flatten()[:, None] * omega[None, :]
-    pe = torch.cat((x.sin(), x.cos(), y.sin(), y.cos()), dim=1)
-    return pe.type(dtype)
+import sp
 
 
 def generate_fractal_mask(sizes):
@@ -45,98 +30,8 @@ def generate_fractal_mask(sizes):
     return mask.bool()
 
 
-class EncoderBlock(nn.Module):
-    """Transformer encoder block."""
-
-    def __init__(
-        self,
-        num_heads: int,
-        hidden_dim: int,
-        mlp_dim: int,
-        dropout: float,
-        attention_dropout: float,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
-    ):
-        super().__init__()
-        self.num_heads = num_heads
-
-        # Attention block
-        self.ln_1 = norm_layer(hidden_dim)
-        self.self_attention = nn.MultiheadAttention(hidden_dim, num_heads, dropout=attention_dropout, batch_first=True)
-        self.dropout = nn.Dropout(dropout)
-
-        # MLP block
-        self.ln_2 = norm_layer(hidden_dim)
-        self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout)
-
-        # Fix init discrepancy between nn.MultiheadAttention and that of big_vision
-        bound = math.sqrt(3 / hidden_dim)
-        nn.init.uniform_(self.self_attention.in_proj_weight, -bound, bound)
-        nn.init.uniform_(self.self_attention.out_proj.weight, -bound, bound)
-
-    def forward(self, input: torch.Tensor, attn_mask: Optional[torch.Tensor]):
-        torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
-        x = self.ln_1(input)
-        x, _ = self.self_attention(x, x, x, need_weights=False, attn_mask=attn_mask)
-        x = self.dropout(x)
-        x = x + input
-
-        y = self.ln_2(x)
-        y = self.mlp(y)
-        return x + y
-
-
-class Encoder(nn.Module):
-    """Transformer Model Encoder for sequence to sequence translation."""
-
-    def __init__(
-        self,
-        num_layers: int,
-        num_heads: int,
-        hidden_dim: int,
-        mlp_dim: int,
-        dropout: float,
-        attention_dropout: float,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
-    ):
-        super().__init__()
-        self.dropout = nn.Dropout(dropout)
-        layers = [
-            EncoderBlock(
-                num_heads,
-                hidden_dim,
-                mlp_dim,
-                dropout,
-                attention_dropout,
-                norm_layer,
-            ) for i in range(num_layers)
-        ]
-        self.layers = nn.ModuleList(layers)
-        self.ln = norm_layer(hidden_dim)
-
-    def forward(self, input: torch.Tensor, attn_mask: Optional[torch.Tensor]):
-        torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
-        x = self.dropout(input)
-        for layer in self.layers:
-            x = layer(x, attn_mask)
-        return self.ln(x)
-
-
-def jax_lecun_normal(layer, fan_in):
-    """(re-)initializes layer weight in the same way as jax.nn.initializers.lecun_normal and bias to zero"""
-
-    # constant is stddev of standard normal truncated to (-2, 2)
-    std = math.sqrt(1 / fan_in) / .87962566103423978
-    nn.init.trunc_normal_(layer.weight, std=std, a=-2 * std, b=2 * std)
-    if layer.bias is not None:
-        nn.init.zeros_(layer.bias)
-
-
 class SimpleVisionTransformer(nn.Module):
     """Vision Transformer modified per https://arxiv.org/abs/2205.01580."""
-
-    def _learned_embeddings(self, num):
-        return nn.Parameter(torch.normal(mean=0., std=math.sqrt(1 / self.hidden_dim), size=(1, num, self.hidden_dim)))
 
     def __init__(
         self,
@@ -155,30 +50,22 @@ class SimpleVisionTransformer(nn.Module):
         summary_size: Optional[int] = None,
         register: int = 0,
         fractal_mask: bool = False,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        norm_layer: Callable[..., torch.nn.Module] = sp.LayerNorm,
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
         self.image_size = image_size
         self.patch_size = patch_size
         self.hidden_dim = hidden_dim
-        self.mlp_dim = mlp_dim
-        self.attention_dropout = attention_dropout
-        self.dropout = dropout
-        self.num_classes = num_classes
-        self.representation_size = representation_size
         self.pool_type = pool_type
-        self.norm_layer = norm_layer
-        self.conv_proj = nn.Conv2d(
-            in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
-        )
+        self.patchifier = sp.Patchifier(hidden_dim=hidden_dim, patch_size=patch_size)
 
         h = w = image_size // patch_size
         seq_length = h * w
         if posemb == "sincos2d":
-            self.register_buffer("pos_embedding", posemb_sincos_2d(h=h, w=w, dim=hidden_dim))
+            self.register_buffer("pos_embedding", sp.posemb_sincos_2d(h=h, w=w, dim=hidden_dim))
         elif posemb == "learn":
-            self.pos_embedding = self._learned_embeddings(seq_length)
+            self.pos_embedding = sp.learned_embeddings(num=seq_length, hidden_dim=hidden_dim)
         else:
             self.pos_embedding = None
 
@@ -192,7 +79,7 @@ class SimpleVisionTransformer(nn.Module):
             sizes.reverse()
             self.register = sum(s ** 2 for s in sizes)
             if posemb == "sincos2d":
-                self.register_buffer("reg", torch.cat([posemb_sincos_2d(h=s, w=s, dim=hidden_dim) for s in sizes], dim=0))
+                self.register_buffer("reg", torch.cat([sp.posemb_sincos_2d(h=s, w=s, dim=hidden_dim) for s in sizes], dim=0))
             elif posemb == "learn":
                 self.reg = self._learned_embeddings(self.register)
             else:
@@ -202,7 +89,7 @@ class SimpleVisionTransformer(nn.Module):
             if self.register == 1:
                 self.register_buffer("reg", torch.zeros(1, 1, hidden_dim))
             elif self.register > 1:  # Random initialization needed to break the symmetry
-                self.reg = self._learned_embeddings(self.register)
+                self.reg = sp.learned_embeddings(num=self.register, hidden_dim=hidden_dim)
 
         if fractal_mask:
             assert summary_size
@@ -214,7 +101,7 @@ class SimpleVisionTransformer(nn.Module):
         else:
             self.fractal_mask = None
 
-        self.encoder = Encoder(
+        self.encoder = sp.Encoder(
             num_layers,
             num_heads,
             hidden_dim,
@@ -223,29 +110,8 @@ class SimpleVisionTransformer(nn.Module):
             attention_dropout,
             norm_layer,
         )
-        self.seq_length = seq_length
 
-        heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
-        if representation_size is None:
-            heads_layers["head"] = nn.Linear(hidden_dim, num_classes)
-        else:
-            heads_layers["pre_logits"] = nn.Linear(hidden_dim, representation_size)
-            heads_layers["act"] = nn.Tanh()
-            heads_layers["head"] = nn.Linear(representation_size, num_classes)
-
-        self.heads = nn.Sequential(heads_layers)
-
-        # Init the patchify stem
-        fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1] // self.conv_proj.groups
-        jax_lecun_normal(self.conv_proj, fan_in)
-
-        if hasattr(self.heads, "pre_logits") and isinstance(self.heads.pre_logits, nn.Linear):
-            fan_in = self.heads.pre_logits.in_features
-            jax_lecun_normal(self.heads.pre_logits, fan_in)
-
-        if isinstance(self.heads.head, nn.Linear):
-            nn.init.zeros_(self.heads.head.weight)
-            nn.init.zeros_(self.heads.head.bias)
+        self.heads = sp.classifier_head(hidden_dim, num_classes, representation_size)
 
     def _process_input(self, x: torch.Tensor) -> torch.Tensor:
         n, c, h, w = x.shape
@@ -256,7 +122,7 @@ class SimpleVisionTransformer(nn.Module):
         n_w = w // p
 
         # (n, c, h, w) -> (n, hidden_dim, n_h, n_w)
-        x = self.conv_proj(x)
+        x = self.patchifier(x)
         # (n, hidden_dim, n_h, n_w) -> (n, hidden_dim, (n_h * n_w))
         x = x.reshape(n, self.hidden_dim, n_h * n_w)
 
