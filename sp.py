@@ -143,6 +143,7 @@ class Encoder(nn.Module):
         dropout: float,
         attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = LayerNorm,
+        attn_mask: Optional[torch.Tensor] = None,
     ):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
@@ -158,9 +159,17 @@ class Encoder(nn.Module):
             )
         self.layers = nn.Sequential(layers)
         self.ln = norm_layer(hidden_dim)
+        if attn_mask is not None:
+            # Note the bitwise-not "~" below. Binary attn_mask for MHA forward pass follows the *opposite* convention
+            # (https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html#torch.nn.MultiheadAttention.forward)
+            # to that of F.scaled_dot_product_attention!
+            # (https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)
+            self.register_buffer("attn_mask", ~attn_mask)
+        else:
+            self.attn_mask = None
 
-    def forward(self, input: torch.Tensor, attn_mask: Optional[torch.Tensor]):
+    def forward(self, input: torch.Tensor):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
         x = self.dropout(input)
-        x, _ = self.layers((x, attn_mask))
+        x, _ = self.layers((x, self.attn_mask))
         return self.ln(x)

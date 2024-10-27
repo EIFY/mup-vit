@@ -93,13 +93,9 @@ class SimpleVisionTransformer(nn.Module):
 
         if fractal_mask:
             assert summary_size
-            # Note the bitwise-not "~" below. Binary attn_mask for MHA forward pass follows the *opposite* convention
-            # (https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html#torch.nn.MultiheadAttention.forward)
-            # to that of F.scaled_dot_product_attention!
-            # (https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)
-            self.register_buffer("fractal_mask", ~generate_fractal_mask(sizes))
+            fractal_mask = generate_fractal_mask(sizes)
         else:
-            self.fractal_mask = None
+            fractal_mask = None
 
         self.encoder = sp.Encoder(
             num_layers,
@@ -109,6 +105,7 @@ class SimpleVisionTransformer(nn.Module):
             dropout,
             attention_dropout,
             norm_layer,
+            fractal_mask,
         )
 
         self.heads = sp.classifier_head(hidden_dim, num_classes, representation_size)
@@ -142,7 +139,7 @@ class SimpleVisionTransformer(nn.Module):
         if self.register:
             n = x.shape[0]
             x = torch.cat([torch.tile(self.reg, (n, 1, 1)), x], dim=1)
-        x = self.encoder(x, self.fractal_mask)
+        x = self.encoder(x)
         if self.pool_type == 'tok':
             x = x[:, 0]
         else:
