@@ -58,7 +58,7 @@ class Patchifier(uu.Conv2d):
             out_channels=hidden_dim,
             kernel_size=patch_size,
             stride=patch_size,
-            # weight_mup_type="input",  # Not supported yet!
+            weight_mup_type="input",
         )
 
 
