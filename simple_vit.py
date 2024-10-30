@@ -35,6 +35,7 @@ class SimpleVisionTransformer(nn.Module):
 
     def __init__(
         self,
+        p,
         image_size: int,
         patch_size: int,
         num_layers: int,
@@ -50,22 +51,23 @@ class SimpleVisionTransformer(nn.Module):
         summary_size: Optional[int] = None,
         register: int = 0,
         fractal_mask: bool = False,
-        norm_layer: Callable[..., torch.nn.Module] = sp.LayerNorm,
+        norm_layer: str = "LayerNorm",
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
         self.image_size = image_size
         self.patch_size = patch_size
         self.hidden_dim = hidden_dim
-        self.pool_type = pool_type
-        self.patchifier = sp.Patchifier(hidden_dim=hidden_dim, patch_size=patch_size)
+        self.patchifier = p.Patchifier(hidden_dim=hidden_dim, patch_size=patch_size)
+        self.add = p.add
+        self.pool = getattr(p, pool_type)
 
         h = w = image_size // patch_size
-        seq_length = h * w
+        self.seq_length = h * w
         if posemb == "sincos2d":
-            self.register_buffer("pos_embedding", sp.posemb_sincos_2d(h=h, w=w, dim=hidden_dim))
+            self.register_buffer("pos_embedding", p.posemb_sincos_2d(h=h, w=w, dim=hidden_dim))
         elif posemb == "learn":
-            self.pos_embedding = sp.learned_embeddings(num=seq_length, hidden_dim=hidden_dim)
+            self.pos_embedding = p.learned_embeddings(num=self.seq_length, hidden_dim=hidden_dim)
         else:
             self.pos_embedding = None
 
@@ -79,9 +81,9 @@ class SimpleVisionTransformer(nn.Module):
             sizes.reverse()
             self.register = sum(s ** 2 for s in sizes)
             if posemb == "sincos2d":
-                self.register_buffer("reg", torch.cat([sp.posemb_sincos_2d(h=s, w=s, dim=hidden_dim) for s in sizes], dim=0))
+                self.register_buffer("reg", torch.cat([p.posemb_sincos_2d(h=s, w=s, dim=hidden_dim) for s in sizes], dim=0))
             elif posemb == "learn":
-                self.reg = self._learned_embeddings(self.register)
+                self.reg = p.learned_embeddings(num=self.register, hidden_dim=hidden_dim)
             else:
                 self.register_buffer("reg", torch.zeros(1, self.register, hidden_dim))
         else:
@@ -89,7 +91,7 @@ class SimpleVisionTransformer(nn.Module):
             if self.register == 1:
                 self.register_buffer("reg", torch.zeros(1, 1, hidden_dim))
             elif self.register > 1:  # Random initialization needed to break the symmetry
-                self.reg = sp.learned_embeddings(num=self.register, hidden_dim=hidden_dim)
+                self.reg = p.learned_embeddings(num=self.register, hidden_dim=hidden_dim)
 
         if fractal_mask:
             assert summary_size
@@ -97,18 +99,18 @@ class SimpleVisionTransformer(nn.Module):
         else:
             fractal_mask = None
 
-        self.encoder = sp.Encoder(
+        self.encoder = p.Encoder(
             num_layers,
             num_heads,
             hidden_dim,
             mlp_dim,
             dropout,
             attention_dropout,
-            norm_layer,
+            getattr(p, norm_layer),
             fractal_mask,
         )
 
-        self.heads = sp.classifier_head(hidden_dim, num_classes, representation_size)
+        self.heads = p.classifier_head(hidden_dim, num_classes, representation_size)
 
     def _process_input(self, x: torch.Tensor) -> torch.Tensor:
         n, c, h, w = x.shape
@@ -135,16 +137,11 @@ class SimpleVisionTransformer(nn.Module):
         # Reshape and permute the input tensor
         x = self._process_input(x)
         if self.pos_embedding is not None:
-            x = x + self.pos_embedding
+            x = self.add(x, self.pos_embedding)
         if self.register:
             n = x.shape[0]
             x = torch.cat([torch.tile(self.reg, (n, 1, 1)), x], dim=1)
         x = self.encoder(x)
-        if self.pool_type == 'tok':
-            x = x[:, 0]
-        else:
-            x = x[:, self.register:]
-            x = x.mean(dim = 1)
+        x = self.pool(x, self.register, self.seq_length)
         x = self.heads(x)
-
         return x

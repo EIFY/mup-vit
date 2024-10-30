@@ -2,6 +2,7 @@
 
 import argparse
 import functools
+import importlib
 import math
 import os
 import random
@@ -65,6 +66,8 @@ parser.add_argument('--register', default=0, type=int, metavar='N',
                          'https://arxiv.org/abs/2309.16588')
 parser.add_argument('--fractal-mask', action='store_true',
                     help='Apply fractal mask to the attention weight. --summary-size must be set.')
+parser.add_argument('--norm-layer', default='LayerNorm', type=str, choices=['LayerNorm', 'RMSNorm', 'Identity'])
+parser.add_argument('--parameterization', default='sp', type=str, choices=['sp', 'simple_mup'])
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
@@ -214,12 +217,9 @@ def is_primary(args):
     return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % args.ngpus_per_node == 0)
 
 
-def weight_decay_param(n, p):
-    return p.ndim >= 2 and n.endswith('weight')
-
-
 def main_worker(gpu, args):
     global best_acc1
+    p = importlib.import_module(args.parameterization)
     args.gpu = gpu
 
     if args.gpu is not None:
@@ -237,6 +237,7 @@ def main_worker(gpu, args):
                                 world_size=args.world_size, rank=args.rank)
     # create model
     model = SimpleVisionTransformer(
+        p=p,
         image_size=args.input_resolution,
         patch_size=args.patch_size,
         num_layers=args.num_layers,
@@ -249,10 +250,10 @@ def main_worker(gpu, args):
         summary_size=args.summary_size,
         register=args.register,
         fractal_mask=args.fractal_mask,
+        norm_layer=args.norm_layer,
     )
 
-    wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
-    non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
+    params = p.generate_parameter_groups(model, args.lr, args.weight_decay, args.decoupled_weight_decay)
     args.total_batch_size = args.batch_size
 
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
@@ -284,19 +285,11 @@ def main_worker(gpu, args):
         device = torch.device("mps")
         model = model.to(device)
 
-    if args.decoupled_weight_decay:
-        args.weight_decay /= args.lr
-    criterion = nn.CrossEntropyLoss().to(device)
-
-    params = [
-        {"params": wd_params, "weight_decay": args.weight_decay},
-        {"params": non_wd_params, "weight_decay": 0.},
-    ]
+    criterion = p.Loss().to(device)
 
     if args.schedule_free:
         optimizer = schedulefree.AdamWScheduleFree(
             params,
-            lr=args.lr,
             betas=(args.beta1, args.beta2),
             warmup_steps=args.warmup,
             r=args.polynomial_weighting_power,
@@ -304,7 +297,6 @@ def main_worker(gpu, args):
     else:
         optimizer = torch.optim.AdamW(
             params,
-            lr=args.lr,
             betas=(args.beta1, args.beta2)
         )
 
@@ -319,10 +311,6 @@ def main_worker(gpu, args):
         train_dataset = datasets.FakeData(1281167, input_shape, 1000, transform)
         val_dataset = datasets.FakeData(50000, input_shape, 1000, transform)
     else:
-        value_range = v2.Normalize(
-            mean=[0.5] * 3,
-            std=[0.5] * 3)
-
         cutout_const = 40
         translate_const = 100
         MAX_LEVEL = 10
@@ -364,7 +352,7 @@ def main_worker(gpu, args):
             transform.append(randaug)
         transform.extend([
             v2.ToDtype(torch.float32, scale=True),
-            value_range
+            p.value_range
         ])
 
         train_dataset = datasets.ImageNet(args.data, split='train', transform=v2.Compose(transform))
@@ -377,7 +365,7 @@ def main_worker(gpu, args):
                 v2.Resize(256),
                 v2.CenterCrop(args.input_resolution),
                 v2.ToDtype(torch.float32, scale=True),
-                value_range,
+                p.value_range,
             ]))
 
     n = len(train_dataset)
@@ -468,7 +456,7 @@ def main_worker(gpu, args):
         validate(val_loader, original_model, criterion, args.start_step, device, args)
         return
 
-    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args)
+    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args, p)
 
 
 def infinite_loader(loader, sampler):
@@ -480,7 +468,7 @@ def infinite_loader(loader, sampler):
         epoch += 1
 
 
-def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args):
+def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args, p):
     batch_time = AverageMeter('Time', device, ':6.3f')
     data_time = AverageMeter('Data', device, ':6.3f')
     losses = AverageMeter('Loss', device, ':.4e')
@@ -508,6 +496,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             # compute output
             output = model(img)
             loss = criterion(output, trt)
+            loss = p.loss_reduction(loss, args.batch_size)
 
             # measure accuracy and record loss
             acc1, acc5 = accuracy(output, trt, topk=(1, 5), class_prob=bool(args.mixup_alpha))
@@ -516,9 +505,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             step_acc5 += acc5[0].item()
 
             # compute gradient
-            (loss / args.accum_freq).backward()
+            loss.backward()
 
-        step_loss /= args.accum_freq
         step_acc1 /= args.accum_freq
         step_acc5 /= args.accum_freq
 
@@ -604,7 +592,7 @@ def validate(val_loader, model, criterion, step, device, args):
 
                     # measure accuracy and record loss
                     acc1, acc5 = accuracy(output, trt, topk=(1, 5))
-                    losses.update(loss.item(), img.size(0))
+                    losses.update(loss.item() / img.size(0), img.size(0))
                     top1.update(acc1[0].item(), img.size(0))
                     top5.update(acc5[0].item(), img.size(0))
                     

@@ -8,6 +8,7 @@ from typing import Callable, Optional, Tuple
 import torch
 import torch.nn as nn
 from torchvision.models.vision_transformer import MLPBlock
+from torchvision.transforms import v2
 
 
 # Taken from https://github.com/lucidrains/vit-pytorch, likely ported from https://github.com/google-research/big_vision/
@@ -23,7 +24,24 @@ def posemb_sincos_2d(h, w, dim, temperature: int = 10000, dtype = torch.float32)
     return pe.type(dtype)
 
 
+Loss = partial(nn.CrossEntropyLoss, reduction='sum')
 LayerNorm = partial(nn.LayerNorm, eps=1e-6)
+RMSNorm = partial(nn.LayerNorm, eps=1e-6)
+Identity = nn.Identity
+add = torch.add
+
+
+def tok(x: torch.Tensor, register: int, seq_length: int):
+    return x[:, 0]
+
+
+def gap(x: torch.Tensor, register: int, seq_length: int):
+    x = x[:, register:]
+    return x.mean(dim = 1)
+
+
+def loss_reduction(loss, batch_size):
+    return loss / batch_size
 
 
 def fan_in_init(layer, fan_in):
@@ -173,3 +191,26 @@ class Encoder(nn.Module):
         x = self.dropout(input)
         x, _ = self.layers((x, self.attn_mask))
         return self.ln(x)
+
+
+def weight_decay_param(n, p):
+    return p.ndim >= 2 and n.endswith('weight')
+
+
+def generate_parameter_groups(model, lr, weight_decay, decoupled_weight_decay):
+    wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
+    non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
+    if decoupled_weight_decay:
+        weight_decay /= lr
+    params = [
+        {"params": wd_params, "lr": lr, "weight_decay": weight_decay},
+        {"params": non_wd_params, "lr": lr, "weight_decay": 0.},
+    ]
+    return params
+
+
+# Ignore input mean & std and just make input ranges from -1 to 1,
+# equivalent to big_vision's value_range(-1, 1).
+value_range = v2.Normalize(
+    mean=[0.5] * 3,
+    std=[0.5] * 3)
