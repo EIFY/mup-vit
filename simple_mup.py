@@ -116,11 +116,15 @@ class ShapedAttention(nn.Module):
         self,
         hidden_size: int,
         heads: int,
+        dropout: float,
+        attention_dropout: float,
         mult: float = 1.0,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.heads = heads
+        self.dropout = uu.Dropout(dropout) if dropout else nn.Identity()
+        self.attention_dropout = attention_dropout
         self.mult = mult
         self.linear_qk = uu.Linear(hidden_size, 2 * hidden_size, constraint=None)
 
@@ -130,13 +134,13 @@ class ShapedAttention(nn.Module):
         v = einops.rearrange(input, "b s (h d) -> b h s d", h=self.heads)
         scale = self.mult * self.heads / self.hidden_size
         new_v = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, scale=scale,
+            q, k, v, attn_mask=mask, dropout_p=self.attention_dropout, scale=scale,
         )
         if centering_matrix is not None:
             centering = centering_matrix @ v
         else:
             centering = v.mean(dim=-2, keepdim=True)
-        v = v + new_v - centering
+        v = v + self.dropout(new_v - centering)
         v = einops.rearrange(v, "b h s d -> b s (h d)")
         return v
 
@@ -147,13 +151,15 @@ class SimplifiedBlock(nn.Module):
         num_heads: int,
         hidden_dim: int,
         mlp_dim: int,
+        dropout: float,
+        attention_dropout: float,
         beta: float,
         attn = ShapedAttention,
         norm_layer = LayerNorm,
     ) -> None:
         super().__init__()
         self.head_size = hidden_dim // num_heads
-        self.attn = attn(hidden_dim, num_heads)
+        self.attn = attn(hidden_dim, num_heads, dropout, attention_dropout)
         self.mlp = MLP(hidden_dim, mlp_dim)
         self.beta = beta
         self.norm = norm_layer(hidden_dim)
@@ -190,6 +196,8 @@ class Encoder(nn.Module):
                 num_heads,
                 hidden_dim,
                 mlp_dim,
+                dropout,
+                attention_dropout,
                 beta=num_layers ** -0.5,
                 norm_layer=norm_layer,
             )
