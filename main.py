@@ -68,6 +68,8 @@ parser.add_argument('--fractal-mask', action='store_true',
                     help='Apply fractal mask to the attention weight. --summary-size must be set.')
 parser.add_argument('--norm-layer', default='LayerNorm', type=str, choices=['LayerNorm', 'RMSNorm', 'Identity'])
 parser.add_argument('--parameterization', default='sp', type=str, choices=['sp', 'simple_mup'])
+parser.add_argument('--dtype', default='float32', type=str,
+                    help='Model weight dtype, e.g. float32, bfloat16, etc.')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
@@ -222,6 +224,7 @@ def is_primary(args):
 def main_worker(gpu, args):
     global best_acc1
     p = importlib.import_module(args.parameterization)
+    args.dtype = getattr(torch, args.dtype)
     args.gpu = gpu
 
     if args.gpu is not None:
@@ -253,7 +256,7 @@ def main_worker(gpu, args):
         register=args.register,
         fractal_mask=args.fractal_mask,
         norm_layer=args.norm_layer,
-    )
+    ).to(dtype=args.dtype)
 
     params = p.generate_parameter_groups(model, args.lr, args.weight_decay, args.decoupled_weight_decay)
     args.total_batch_size = args.batch_size
@@ -308,7 +311,7 @@ def main_worker(gpu, args):
         input_shape = (3, args.input_resolution, args.input_resolution)
         transform = v2.Compose([
             v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
+            v2.ToDtype(args.dtype, scale=True),
         ])
         train_dataset = datasets.FakeData(1281167, input_shape, 1000, transform)
         val_dataset = datasets.FakeData(50000, input_shape, 1000, transform)
@@ -353,7 +356,7 @@ def main_worker(gpu, args):
         if args.randaug:
             transform.append(randaug)
         transform.extend([
-            v2.ToDtype(torch.float32, scale=True),
+            v2.ToDtype(args.dtype, scale=True),
             p.value_range
         ])
 
@@ -366,7 +369,7 @@ def main_worker(gpu, args):
                 v2.ToImage(),
                 v2.Resize(256),
                 v2.CenterCrop(args.input_resolution),
-                v2.ToDtype(torch.float32, scale=True),
+                v2.ToDtype(args.dtype, scale=True),
                 p.value_range,
             ]))
 
