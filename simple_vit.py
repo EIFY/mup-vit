@@ -52,6 +52,7 @@ class SimpleVisionTransformer(nn.Module):
         register: int = 0,
         fractal_mask: bool = False,
         norm_layer: str = "LayerNorm",
+        l2_attn: bool = False,
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
@@ -109,6 +110,7 @@ class SimpleVisionTransformer(nn.Module):
             attention_dropout,
             getattr(p, norm_layer),
             fractal_mask,
+            l2_attn=l2_attn,
         )
 
         self.heads = p.classifier_head(hidden_dim, num_classes, representation_size)

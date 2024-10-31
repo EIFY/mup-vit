@@ -121,6 +121,7 @@ class ShapedAttention(nn.Module):
         dropout: float,
         attention_dropout: float,
         mult: float = 1.0,
+        l2_attn: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -128,13 +129,26 @@ class ShapedAttention(nn.Module):
         self.dropout = uu.Dropout(dropout) if dropout else nn.Identity()
         self.attention_dropout = attention_dropout
         self.mult = mult
-        self.linear_qk = uu.Linear(hidden_size, 2 * hidden_size, constraint=None)
+        self.linear_q = uu.Linear(hidden_size, hidden_size)
+        self.linear_k = uu.Linear(hidden_size, hidden_size)
+        self.l2_attn = l2_attn
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor, centering_matrix: torch.Tensor) -> torch.Tensor:
-        qk = self.linear_qk(input)
-        q, k = einops.rearrange(qk, "b s (z h d) -> z b h s d", h=self.heads, z=2)
+        q = self.linear_q(input)
+        k = self.linear_k(input)
+        q = einops.rearrange(q, "b s (h d) -> b h s d", h=self.heads)
+        k = einops.rearrange(k, "b s (h d) -> b h s d", h=self.heads)
         v = einops.rearrange(input, "b s (h d) -> b h s d", h=self.heads)
         scale = self.mult * self.heads / self.hidden_size
+        if self.l2_attn:
+            query_sq = q.square().sum(-1, keepdim=True)
+            key_sq = k.square().sum(-1, keepdim=True)
+            sq_sum = scale * (query_sq + key_sq.transpose(-2, -1))
+            if mask is not None:
+                mask = mask - sq_sum
+            else:
+                mask = -sq_sum
+            scale *= 2
         new_v = F.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, dropout_p=self.attention_dropout, scale=scale,
         )
@@ -158,10 +172,11 @@ class SimplifiedBlock(nn.Module):
         beta: float,
         attn = ShapedAttention,
         norm_layer = LayerNorm,
+        l2_attn: bool = False,
     ) -> None:
         super().__init__()
         self.head_size = hidden_dim // num_heads
-        self.attn = attn(hidden_dim, num_heads, dropout, attention_dropout)
+        self.attn = attn(hidden_dim, num_heads, dropout, attention_dropout, l2_attn=l2_attn)
         self.mlp = MLP(hidden_dim, mlp_dim)
         self.beta = beta
         self.norm = norm_layer(hidden_dim)
@@ -189,6 +204,7 @@ class Encoder(nn.Module):
         attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = LayerNorm,
         attn_mask: Optional[torch.Tensor] = None,
+        l2_attn: bool = False,
     ):
         super().__init__()
         self.dropout = uu.Dropout(dropout)
@@ -202,13 +218,16 @@ class Encoder(nn.Module):
                 attention_dropout,
                 beta=num_layers ** -0.5,
                 norm_layer=norm_layer,
+                l2_attn=l2_attn,
             )
         self.layers = uu.DepthSequential(layers)
         self.ln = norm_layer(hidden_dim)
         if attn_mask is not None:
-            self.register_buffer("attn_mask", attn_mask)
             mask_mean = attn_mask.float().sum(dim=-1, keepdim=True)
             self.register_buffer("centering_matrix", attn_mask / mask_mean)
+            float_mask = torch.zeros_like(attn_mask, dtype=torch.float32)
+            float_mask.masked_fill_(~attn_mask, -math.inf)
+            self.register_buffer("attn_mask", float_mask)
         else:
             self.attn_mask = self.centering_matrix = None
 

@@ -68,6 +68,8 @@ parser.add_argument('--fractal-mask', action='store_true',
                     help='Apply fractal mask to the attention weight. --summary-size must be set.')
 parser.add_argument('--norm-layer', default='LayerNorm', type=str, choices=['LayerNorm', 'RMSNorm', 'Identity'])
 parser.add_argument('--parameterization', default='sp', type=str, choices=['sp', 'simple_mup'])
+parser.add_argument('--l2-self-attention', action='store_true',
+                    help='Use L2 self-attention (https://arxiv.org/abs/2006.04710).')
 parser.add_argument('--dtype', default='float32', type=str,
                     help='Model weight dtype, e.g. float32, bfloat16, etc.')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
@@ -256,6 +258,7 @@ def main_worker(gpu, args):
         register=args.register,
         fractal_mask=args.fractal_mask,
         norm_layer=args.norm_layer,
+        l2_attn=args.l2_self_attention,
     ).to(dtype=args.dtype)
 
     params = p.generate_parameter_groups(model, args.lr, args.weight_decay, args.decoupled_weight_decay)

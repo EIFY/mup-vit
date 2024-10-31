@@ -5,8 +5,11 @@ import math
 from collections import OrderedDict
 from functools import partial
 from typing import Callable, Optional, Tuple
+
+import einops
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision.models.vision_transformer import MLPBlock
 from torchvision.transforms import v2
 
@@ -96,6 +99,16 @@ def classifier_head(hidden_dim, num_classes, representation_size):
     return heads
 
 
+def attn_proj(hidden_dim):
+    proj = nn.Linear(hidden_dim, hidden_dim)
+    # Linear projection init for attention in big_vision's ViT:
+    # Xavier uniform for weight, zero-init for bias.
+    bound = math.sqrt(3 / hidden_dim)
+    nn.init.uniform_(proj.weight, -bound, bound)
+    nn.init.zeros_(proj.bias)
+    return proj
+
+
 class MaskedAttention(nn.Module):
 
     def __init__(
@@ -103,18 +116,40 @@ class MaskedAttention(nn.Module):
         hidden_dim: int,
         num_heads: int,
         dropout: float,
+        l2_attn: bool = False,
     ):
         super().__init__()
-        self.attention = nn.MultiheadAttention(hidden_dim, num_heads, dropout=dropout, batch_first=True)
+        self.scale = math.sqrt(num_heads / hidden_dim)
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.linear_q = attn_proj(hidden_dim)
+        self.linear_k = attn_proj(hidden_dim)
+        self.linear_v = attn_proj(hidden_dim)
+        self.linear_out = attn_proj(hidden_dim)
+        self.l2_attn = l2_attn
 
-        # Fix init discrepancy between nn.MultiheadAttention and that of big_vision
-        bound = math.sqrt(3 / hidden_dim)
-        nn.init.uniform_(self.attention.in_proj_weight, -bound, bound)
-        nn.init.uniform_(self.attention.out_proj.weight, -bound, bound)
-
-    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor]):
-        x, _ = self.attention(x, x, x, need_weights=False, attn_mask=attn_mask)
-        return x
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor]):
+        scale = self.scale
+        q = self.linear_q(x)
+        k = self.linear_k(x)
+        v = self.linear_v(x)
+        q = einops.rearrange(q, "b s (h d) -> b h s d", h=self.num_heads)
+        k = einops.rearrange(k, "b s (h d) -> b h s d", h=self.num_heads)
+        v = einops.rearrange(v, "b s (h d) -> b h s d", h=self.num_heads)
+        if self.l2_attn:
+            query_sq = q.square().sum(-1, keepdim=True)
+            key_sq = k.square().sum(-1, keepdim=True)
+            sq_sum = scale * (query_sq + key_sq.transpose(-2, -1))
+            if mask is not None:
+                mask = mask - sq_sum
+            else:
+                mask = -sq_sum
+            scale *= 2
+        o = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=mask, dropout_p=self.dropout, scale=scale,
+        )
+        o = einops.rearrange(o, "b h s d -> b s (h d)")
+        return self.linear_out(o)
 
 
 class EncoderBlock(nn.Module):
@@ -128,12 +163,13 @@ class EncoderBlock(nn.Module):
         dropout: float,
         attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = LayerNorm,
+        l2_attn: bool = False,
     ):
         super().__init__()
 
         # Attention block
         self.ln_1 = norm_layer(hidden_dim)
-        self.attention = MaskedAttention(hidden_dim, num_heads, dropout=attention_dropout)
+        self.attention = MaskedAttention(hidden_dim, num_heads, dropout=attention_dropout, l2_attn=l2_attn)
         self.dropout = nn.Dropout(dropout)
 
         # MLP block
@@ -144,7 +180,7 @@ class EncoderBlock(nn.Module):
         input, attn_mask = input
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
         x = self.ln_1(input)
-        x = self.attention(x, attn_mask=attn_mask)
+        x = self.attention(x, mask=attn_mask)
         x = self.dropout(x)
         x = x + input
 
@@ -166,6 +202,7 @@ class Encoder(nn.Module):
         attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = LayerNorm,
         attn_mask: Optional[torch.Tensor] = None,
+        l2_attn: bool = False,
     ):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
@@ -178,15 +215,14 @@ class Encoder(nn.Module):
                 dropout,
                 attention_dropout,
                 norm_layer,
+                l2_attn,
             )
         self.layers = nn.Sequential(layers)
         self.ln = norm_layer(hidden_dim)
         if attn_mask is not None:
-            # Note the bitwise-not "~" below. Binary attn_mask for MHA forward pass follows the *opposite* convention
-            # (https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html#torch.nn.MultiheadAttention.forward)
-            # to that of F.scaled_dot_product_attention!
-            # (https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)
-            self.register_buffer("attn_mask", ~attn_mask)
+            float_mask = torch.zeros_like(attn_mask, dtype=torch.float32)
+            float_mask.masked_fill_(~attn_mask, -math.inf)
+            self.register_buffer("attn_mask", float_mask)
         else:
             self.attn_mask = None
 
