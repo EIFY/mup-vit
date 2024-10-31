@@ -63,11 +63,13 @@ class Patchifier(uu.Conv2d):
 
 
 def learned_embeddings(num, hidden_dim):
-    weight = uu.Parameter(torch.normal(mean=0.0, std=1.0, size=(num, hidden_dim)), mup_type="weight")
-    # Empirical 1/sqrt(hidden_dim) embedding scaling law from https://arxiv.org/abs/2407.17465
-    # ViT doesn't need to look up embeddings but needs to tile/cat them, so almost-raw Parameter()
-    # is preferred over uu.Embedding().
-    return scale_bwd(weight, hidden_dim ** -0.5)
+    # Empirical embedding LR 1/sqrt(hidden_dim) from https://arxiv.org/abs/2407.17465 applied with
+    # mup_type="weight".
+    return uu.Parameter(torch.normal(mean=0.0, std=1.0, size=(num, hidden_dim)), mup_type="weight")
+
+
+def embedding_scale(embeddings, batch_size):
+    return S.scale_bwd(embeddings, batch_size ** -0.5)
 
 
 def classifier_head(hidden_dim, num_classes, representation_size):

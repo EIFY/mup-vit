@@ -71,6 +71,10 @@ def learned_embeddings(num, hidden_dim):
     return nn.Parameter(torch.normal(mean=0., std=math.sqrt(1 / hidden_dim), size=(1, num, hidden_dim)))
 
 
+def embedding_scale(embeddings, batch_size):
+    return embeddings
+
+
 def classifier_head(hidden_dim, num_classes, representation_size):
     heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
     if representation_size is None:

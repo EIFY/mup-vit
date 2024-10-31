@@ -61,6 +61,7 @@ class SimpleVisionTransformer(nn.Module):
         self.patchifier = p.Patchifier(hidden_dim=hidden_dim, patch_size=patch_size)
         self.add = p.add
         self.pool = getattr(p, pool_type)
+        self.embedding_scale = p.embedding_scale
 
         h = w = image_size // patch_size
         self.seq_length = h * w
@@ -136,11 +137,12 @@ class SimpleVisionTransformer(nn.Module):
     def forward(self, x: torch.Tensor):
         # Reshape and permute the input tensor
         x = self._process_input(x)
+        n = x.shape[0]
         if self.pos_embedding is not None:
-            x = self.add(x, self.pos_embedding)
+            x = self.add(x, self.embedding_scale(self.pos_embedding, n))
         if self.register:
-            n = x.shape[0]
-            x = torch.cat([torch.tile(self.reg, (n, 1, 1)), x], dim=1)
+            reg = self.embedding_scale(self.reg, n)
+            x = torch.cat([torch.tile(reg, (n, 1, 1)), x], dim=1)
         x = self.encoder(x)
         x = self.pool(x, self.register, self.seq_length)
         x = self.heads(x)
