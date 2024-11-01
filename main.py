@@ -155,7 +155,7 @@ def main():
                       'disable data parallelism.')
 
     if args.dist_url == "env://" and args.world_size == -1:
-        args.world_size = int(os.environ["WORLD_SIZE"])
+        args.world_size = int(os.environ.get("WORLD_SIZE", 1))
 
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
