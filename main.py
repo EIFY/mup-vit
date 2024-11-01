@@ -233,6 +233,7 @@ def main_worker(gpu, args):
 
     wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
     non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
+    args.total_batch_size = args.batch_size
 
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
         print('using CPU, this will be slow')
@@ -347,11 +348,11 @@ def main_worker(gpu, args):
             ]))
 
     n = len(train_dataset)
-    total_steps = round(n * args.epochs / args.batch_size)
+    total_steps = round(n * args.epochs / args.total_batch_size)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False, drop_last=True)
     else:
         train_sampler = None
         val_sampler = None
@@ -583,6 +584,14 @@ def validate(val_loader, model, criterion, step, device, args):
     if args.distributed:
         top1.all_reduce()
         top5.all_reduce()
+
+    if args.distributed and (len(val_loader.sampler) * args.world_size < len(val_loader.dataset)):
+        aux_val_dataset = Subset(val_loader.dataset,
+                                 range(len(val_loader.sampler) * args.world_size, len(val_loader.dataset)))
+        aux_val_loader = torch.utils.data.DataLoader(
+            aux_val_dataset, batch_size=args.batch_size, shuffle=False,
+            num_workers=args.workers, pin_memory=True, multiprocessing_context='spawn')
+        run_validate(aux_val_loader, len(val_loader))
 
     progress.display_summary()
 
