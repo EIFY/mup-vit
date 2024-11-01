@@ -21,11 +21,6 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 
-try:
-    import horovod.torch as hvd
-except ImportError:
-    hvd = None
-
 import torchvision.datasets as datasets
 import torchvision.models as models
 from torchvision.transforms import v2
@@ -129,21 +124,7 @@ parser.add_argument("--report-to", default='', type=str,
                     help="Options are ['wandb']")
 parser.add_argument("--wandb-notes", default='', type=str,
                     help="Notes if logging with wandb")
-parser.add_argument('--horovod', action='store_true')
 best_acc1 = 0
-
-
-def broadcast_object(args, obj, src=0):
-    # broadcast a pickle-able python object from rank-0 to all ranks
-    if args.horovod:
-        return hvd.broadcast_object(obj, root_rank=src)
-    else:
-        if args.rank == src:
-            objects = [obj]
-        else:
-            objects = [None]
-        dist.broadcast_object_list(objects, src=src)
-        return objects[0]
 
 
 def collate(batch, mixup):
