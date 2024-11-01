@@ -106,7 +106,7 @@ parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--rank', default=-1, type=int,
                     help='node rank for distributed training')
-parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
+parser.add_argument('--dist-url', default='env://', type=str,
                     help='url used to set up distributed training')
 parser.add_argument('--dist-backend', default='nccl', type=str,
                     help='distributed backend')
@@ -129,6 +129,7 @@ parser.add_argument("--report-to", default='', type=str,
                     help="Options are ['wandb']")
 parser.add_argument("--wandb-notes", default='', type=str,
                     help="Notes if logging with wandb")
+parser.add_argument('--horovod', action='store_true')
 best_acc1 = 0
 
 
@@ -187,9 +188,6 @@ def main():
     # get the name of the experiments
     if args.name is None:
         date_str = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
-        if args.distributed:
-            # sync date_str from primary to all ranks
-            date_str = broadcast_object(args, date_str)
         args.name = '-'.join([
             date_str,
             f"lr_{args.lr}",
@@ -207,14 +205,14 @@ def main():
         args.world_size = args.ngpus_per_node * args.world_size
         # Use torch.multiprocessing.spawn to launch distributed processes: the
         # main_worker process function
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(args, ))
+        mp.spawn(main_worker, nprocs=args.ngpus_per_node, args=(args, ))
     else:
         # Simply call main_worker function
         main_worker(args.gpu, args)
 
 
 def is_primary(args):
-    return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % arg.ngpus_per_node == 0)
+    return not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % args.ngpus_per_node == 0)
 
 
 def weight_decay_param(n, p):
@@ -372,7 +370,7 @@ def main_worker(gpu, args):
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False, drop_last=True)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
     else:
         train_sampler = None
         val_sampler = None
@@ -449,15 +447,24 @@ def main_worker(gpu, args):
         validate(val_loader, original_model, criterion, args.start_step, device, args)
         return
 
-    train(train_loader, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args)
+    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args)
 
 
-def train(train_loader, val_loader, start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args):
-    batch_time = AverageMeter('Time', ':6.3f')
-    data_time = AverageMeter('Data', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
+def infinite_loader(loader, sampler):
+    epoch = 0
+    while True:
+        if sampler:
+            sampler.set_epoch(epoch)
+        yield from loader
+        epoch += 1
+
+
+def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args):
+    batch_time = AverageMeter('Time', device, ':6.3f')
+    data_time = AverageMeter('Data', device, ':6.3f')
+    losses = AverageMeter('Loss', device, ':.4e')
+    top1 = AverageMeter('Acc@1', device, ':6.2f')
+    top5 = AverageMeter('Acc@5', device, ':6.2f')
     progress = ProgressMeter(
         total_steps,
         [batch_time, data_time, losses, top1, top5])
@@ -467,11 +474,7 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
     end = time.time()
     best_acc1 = 0
 
-    def infinite_loader():
-        while True:
-            yield from train_loader
-
-    for step, (images, target) in zip(range(start_step + 1, total_steps + 1), infinite_loader()):
+    for step, (images, target) in zip(range(start_step + 1, total_steps + 1), infinite_loader(train_loader, train_sampler)):
         # measure data loading time
         data_time.update(time.time() - end)
 
@@ -583,10 +586,10 @@ def validate(val_loader, model, criterion, step, device, args):
                 if i % args.print_freq == 0:
                     progress.display(i)
 
-    batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
-    losses = AverageMeter('Loss', ':.4e', Summary.NONE)
-    top1 = AverageMeter('Acc@1', ':6.2f', Summary.AVERAGE)
-    top5 = AverageMeter('Acc@5', ':6.2f', Summary.AVERAGE)
+    batch_time = AverageMeter('Time', device, ':6.3f', Summary.NONE)
+    losses = AverageMeter('Loss', device, ':.4e', Summary.NONE)
+    top1 = AverageMeter('Acc@1', device, ':6.2f', Summary.AVERAGE)
+    top5 = AverageMeter('Acc@5', device, ':6.2f', Summary.AVERAGE)
     progress = ProgressMeter(
         len(val_loader) + (args.distributed and (len(val_loader.sampler) * args.world_size < len(val_loader.dataset))),
         [batch_time, losses, top1, top5],
@@ -599,14 +602,6 @@ def validate(val_loader, model, criterion, step, device, args):
     if args.distributed:
         top1.all_reduce()
         top5.all_reduce()
-
-    if args.distributed and (len(val_loader.sampler) * args.world_size < len(val_loader.dataset)):
-        aux_val_dataset = Subset(val_loader.dataset,
-                                 range(len(val_loader.sampler) * args.world_size, len(val_loader.dataset)))
-        aux_val_loader = torch.utils.data.DataLoader(
-            aux_val_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=True, multiprocessing_context='spawn')
-        run_validate(aux_val_loader, len(val_loader))
 
     progress.display_summary()
 
@@ -635,10 +630,11 @@ class Summary(Enum):
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
-    def __init__(self, name, fmt=':f', summary_type=Summary.AVERAGE):
+    def __init__(self, name, device, fmt=':f', summary_type=Summary.AVERAGE):
         self.name = name
         self.fmt = fmt
         self.summary_type = summary_type
+        self.device = device
         self.reset()
 
     def reset(self):
@@ -654,13 +650,7 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
     def all_reduce(self):
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-        total = torch.tensor([self.sum, self.count], dtype=torch.float32, device=device)
+        total = torch.tensor([self.sum, self.count], dtype=torch.float32, device=self.device)
         dist.all_reduce(total, dist.ReduceOp.SUM, async_op=False)
         self.sum, self.count = total.tolist()
         self.avg = self.sum / self.count
