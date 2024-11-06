@@ -50,8 +50,8 @@ taking advantage of [`torch.nn.MultiheadAttention()`](https://pytorch.org/docs/s
 I have to fix some of the parameter initialization, however:
 
 1. `torch.nn.MultiheadAttention()` comes with its own issues. When QKV are of the same dimension, their projection matrices are combined into
-`self.in_proj_weight` whose initial values are [set with `xavier_uniform_()`](https://github.com/pytorch/pytorch/blob/e62073d7997c9e63896cb5289ffd0874a8cc1838/torch/nn/modules/activation.py#L1074).
-Likely unintentionally, this means that the values are sampled from uniform distribution U(−a,a) where a = sqrt(3 / (2 * hidden_dim)) instead sqrt(3 / hidden_dim).
+`self.in_proj_weight` whose initial values are [set with `xavier_uniform_()`](https://github.com/pytorch/pytorch/blob/e62073d7997c9e63896cb5289ffd0874a8cc1838/torch/nn/modules/activation.py#L1112).
+Likely unintentionally, this means that the values are sampled from uniform distribution U(−a,a) where a = sqrt(3 / (2 * hidden_dim)) instead of sqrt(3 / hidden_dim).
 Furthermore, the output projection is [initialized as `NonDynamicallyQuantizableLinear()`](https://github.com/pytorch/pytorch/blob/e62073d7997c9e63896cb5289ffd0874a8cc1838/torch/nn/modules/activation.py#L1097)
 [whose initial values are sampled from U(-sqrt(k), sqrt(k)), k = 1 / hidden_dim](https://pytorch.org/docs/stable/generated/torch.nn.Linear.html).
 Both are therefore re-initialized with U(−a,a) where a = sqrt(3 / hidden_dim)<sup>[1](#myfootnote1)</sup> to conform with the [`jax.nn.initializers.xavier_uniform()`
