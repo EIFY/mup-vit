@@ -365,12 +365,13 @@ def main_worker(gpu, args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
-        collate_fn=collate_fn, drop_last=True, multiprocessing_context='spawn')
+        collate_fn=collate_fn, drop_last=True, multiprocessing_context='spawn',
+        persistent_workers=True, pin_memory_device=str(device))
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
-        multiprocessing_context='spawn')
+        multiprocessing_context='spawn', pin_memory_device=str(device))
 
     warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
@@ -590,7 +591,8 @@ def validate(val_loader, model, criterion, step, device, args):
                                  range(len(val_loader.sampler) * args.world_size, len(val_loader.dataset)))
         aux_val_loader = torch.utils.data.DataLoader(
             aux_val_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=True, multiprocessing_context='spawn')
+            num_workers=args.workers, pin_memory=True, multiprocessing_context='spawn',
+            pin_memory_device=str(device))
         run_validate(aux_val_loader, len(val_loader))
 
     progress.display_summary()
