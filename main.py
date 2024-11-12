@@ -303,6 +303,7 @@ def main_worker(gpu, args):
             warmup_steps=args.warmup,
             r=args.polynomial_weighting_power,
         )
+        optimizer.train()
     else:
         optimizer = torch.optim.AdamW(
             params,
