@@ -97,6 +97,8 @@ parser.add_argument('--decoupled-weight-decay', default=True,
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
+parser.add_argument('--grad-clip-norm', type=float, default=1.0,
+                    help="Max norm for gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
                     help="Switch back to torchvision's RandomResizedCrop(), "
                          'which actually improves the model')
@@ -519,7 +521,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         losses.update(step_loss, images.size(0))
 
         # do SGD step
-        l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
         optimizer.step()
         optimizer.zero_grad()
 
