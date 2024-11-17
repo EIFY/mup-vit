@@ -446,11 +446,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     batch_time = AverageMeter('Time', device, ':6.3f')
     data_time = AverageMeter('Data', device, ':6.3f')
     losses = AverageMeter('Loss', device, ':.4e')
-    top1 = AverageMeter('Acc@1', device, ':6.2f')
-    top5 = AverageMeter('Acc@5', device, ':6.2f')
     progress = ProgressMeter(
         total_steps,
-        [batch_time, data_time, losses, top1, top5])
+        [batch_time, data_time, losses])
 
     # switch to train mode
     model.train()
@@ -464,29 +462,21 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         # move data to the same device as model
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
-        step_loss = step_acc1 = step_acc5 = 0.0
+        step_loss = 0.0
 
         for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
             # compute output
             output = model(img)
             loss = criterion(output, trt)
 
-            # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, trt, topk=(1, 5), class_prob=bool(args.mixup_alpha))
+            # record loss
             step_loss += loss.item()
-            step_acc1 += acc1[0].item()
-            step_acc5 += acc5[0].item()
 
             # compute gradient
             (loss / args.accum_freq).backward()
 
         step_loss /= args.accum_freq
-        step_acc1 /= args.accum_freq
-        step_acc5 /= args.accum_freq
-
         losses.update(step_loss, images.size(0))
-        top1.update(step_acc1, images.size(0))
-        top5.update(step_acc5, images.size(0))
 
         # do SGD step
         l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -508,8 +498,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 samples_per_second = samples_per_second_per_gpu * args.world_size
                 log_data = {
                     "train/loss": step_loss,
-                    'train/acc@1': step_acc1,
-                    'train/acc@5': step_acc5,
                     "data_time": data_time.val,
                     "batch_time": batch_time.val,
                     "samples_per_second": samples_per_second,
@@ -688,17 +676,12 @@ class ProgressMeter(object):
         fmt = '{:' + str(num_digits) + 'd}'
         return '[' + fmt + '/' + fmt.format(num_batches) + ']'
 
-def accuracy(output, target, topk=(1,), class_prob=False):
+def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
         maxk = max(topk)
         batch_size = target.size(0)
         
-        # with e.g. MixUp target is now given by probabilities for each class so we need to convert to class indices
-        if class_prob:
-            _, target = target.topk(1, 1, True, True)
-            target = target.squeeze(dim=1)
-
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
         correct = pred.eq(target.view(1, -1).expand_as(pred))
