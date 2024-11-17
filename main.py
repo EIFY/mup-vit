@@ -39,6 +39,8 @@ parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
                     help='path to dataset (default: imagenet)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
+parser.add_argument('--prefetch-factor', default=2, type=int, metavar='N',
+                    help='number of batches for each worker to prefetch (default: 2)')
 parser.add_argument('--hidden-dim', default=384, type=int, metavar='N',
                     help='Embedding dimension of the ViT (default: 384)')
 parser.add_argument('--input-resolution', default=224, type=int, metavar='RES',
@@ -366,12 +368,12 @@ def main_worker(gpu, args):
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
         collate_fn=collate_fn, drop_last=True, multiprocessing_context='spawn',
-        persistent_workers=True, pin_memory_device=str(device))
+        prefetch_factor=args.prefetch_factor, persistent_workers=True, pin_memory_device=str(device))
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
-        multiprocessing_context='spawn', pin_memory_device=str(device))
+        multiprocessing_context='spawn', prefetch_factor=args.prefetch_factor, pin_memory_device=str(device))
 
     warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
