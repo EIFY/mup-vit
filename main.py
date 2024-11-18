@@ -422,7 +422,7 @@ def main_worker(gpu, args):
 
     # Inductor doesn't support MPS yet (https://github.com/pytorch/pytorch/issues/125254)
     model = torch.compile(
-        original_model, backend="aot_eager" if device.type == 'mps' else "inductor")
+        original_model, backend="aot_eager" if device.type == 'mps' else "inductor", mode="max-autotune-no-cudagraphs")
 
     if args.evaluate:
         # evaluate on validation set.
