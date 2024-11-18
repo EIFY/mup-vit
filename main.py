@@ -268,7 +268,6 @@ def main_worker(gpu, args):
 
     if args.decoupled_weight_decay:
         args.weight_decay /= args.lr
-    criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.AdamW(
         [
             {"params": wd_params, "weight_decay": args.weight_decay},
@@ -429,10 +428,10 @@ def main_worker(gpu, args):
         # evaluate on validation set.
         # I got RuntimeError: Found a custom (non-ATen) operator that either mutates or its inputs: aten::record_stream..
         # if I use the compiled model, so for now I pass in original_model instead.
-        validate(val_loader, original_model, criterion, args.start_step, device, args)
+        validate(val_loader, original_model, args.start_step, device, args)
         return
 
-    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args)
+    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
 
 
 def infinite_loader(loader, sampler):
@@ -444,7 +443,7 @@ def infinite_loader(loader, sampler):
         epoch += 1
 
 
-def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args):
+def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, optimizer, scheduler, device, args):
     batch_time = AverageMeter('Time', device, ':6.3f')
     data_time = AverageMeter('Data', device, ':6.3f')
     losses = AverageMeter('Loss', device, ':.4e')
@@ -468,8 +467,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
             # compute output
-            output = model(img)
-            loss = criterion(output, trt)
+            _, loss = model(img, trt)
 
             # record loss
             step_loss += loss.item()
@@ -512,7 +510,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         if step % args.log_steps == 0 or step == total_steps:
 
-            acc1 = validate(val_loader, original_model, criterion, step, device, args)
+            acc1 = validate(val_loader, original_model, step, device, args)
 
             # remember best acc@1 and save checkpoint
             is_best = acc1 > best_acc1
@@ -530,7 +528,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         scheduler.step()
 
 
-def validate(val_loader, model, criterion, step, device, args):
+def validate(val_loader, model, step, device, args):
 
     def run_validate(loader, base_progress=0):
         with torch.no_grad():
@@ -543,8 +541,7 @@ def validate(val_loader, model, criterion, step, device, args):
                 target = target.to(device, non_blocking=True)
                 for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
                     # compute output
-                    output = model(img)
-                    loss = criterion(output, trt)
+                    output, loss = model(img, trt)
 
                     # measure accuracy and record loss
                     acc1, acc5 = accuracy(output, trt, topk=(1, 5))

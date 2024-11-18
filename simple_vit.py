@@ -127,6 +127,7 @@ class SimpleVisionTransformer(nn.Module):
         pool_type: str = "gap",
         register: int = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        loss: Callable[..., torch.nn.Module] = nn.CrossEntropyLoss,
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
@@ -179,6 +180,7 @@ class SimpleVisionTransformer(nn.Module):
             heads_layers["head"] = nn.Linear(representation_size, num_classes)
 
         self.heads = nn.Sequential(heads_layers)
+        self.loss_fn = loss()
 
         # Init the patchify stem
         fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1] // self.conv_proj.groups
@@ -213,7 +215,7 @@ class SimpleVisionTransformer(nn.Module):
 
         return x
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, target: torch.Tensor):
         # Reshape and permute the input tensor
         x = self._process_input(x)
         if self.pos_embedding is not None:
@@ -228,5 +230,5 @@ class SimpleVisionTransformer(nn.Module):
             x = x[:, self.register:]
             x = x.mean(dim = 1)
         x = self.heads(x)
-
-        return x
+        loss = self.loss_fn(x, target)
+        return x, loss
