@@ -17,6 +17,21 @@ from torchvision.transforms.v2._utils import _get_fill, _setup_size, query_size
 ImageOrVideo = Union[torch.Tensor, PIL.Image.Image, tv_tensors.Image, tv_tensors.Video]
 
 
+class TwoHotMixUp:
+    def __init__(self, alpha: float):
+        self._dist = None
+        if alpha:
+            self._dist = torch.distributions.Beta(alpha, alpha)
+
+    def __call__(self, images, labels):
+        if self._dist:
+            lam = self._dist.sample()
+            images = images.roll(1, 0).mul_(1.0 - lam).add_(images, alpha=lam)
+            return images, lam, labels, labels.roll(1, 0)
+        else:
+            return images, 1, labels, labels
+
+
 class TFInceptionCrop(Transform):
     """TensorFlow-style Inception crop, i.e. tf.slice() with the bbox returned by
     tf.image.sample_distorted_bounding_box(). Note that get_params() is not supported. 

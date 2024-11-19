@@ -27,7 +27,7 @@ from torchvision.transforms import v2
 from torch.utils.data import Subset
 
 from simple_vit import SimpleVisionTransformer
-from transforms import TFInceptionCrop, RandAugment17
+from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
 
 import wandb
 
@@ -358,10 +358,8 @@ def main_worker(gpu, args):
         train_sampler = None
         val_sampler = None
 
-    collate_fn = None
-    if args.mixup_alpha:
-        mixup = v2.MixUp(alpha=args.mixup_alpha, num_classes=1000)
-        collate_fn = functools.partial(collate, mixup=mixup)
+    mixup = TwoHotMixUp(alpha=args.mixup_alpha)
+    collate_fn = functools.partial(collate, mixup=mixup)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
@@ -426,9 +424,7 @@ def main_worker(gpu, args):
 
     if args.evaluate:
         # evaluate on validation set.
-        # I got RuntimeError: Found a custom (non-ATen) operator that either mutates or its inputs: aten::record_stream..
-        # if I use the compiled model, so for now I pass in original_model instead.
-        validate(val_loader, original_model, args.start_step, device, args)
+        validate(val_loader, model, args.start_step, device, args)
         return
 
     train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
@@ -456,18 +452,19 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     end = time.time()
     best_acc1 = 0
 
-    for step, (images, target) in zip(range(start_step + 1, total_steps + 1), infinite_loader(train_loader, train_sampler)):
+    for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), infinite_loader(train_loader, train_sampler)):
         # measure data loading time
         data_time.update(time.time() - end)
 
         # move data to the same device as model
         images = images.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+        target1 = target1.to(device, non_blocking=True)
+        target2 = target2.to(device, non_blocking=True)
         step_loss = 0.0
 
-        for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
+        for img, trt1, trt2 in zip(*(t.chunk(args.accum_freq) for t in (images, target1, target2))):
             # compute output
-            _, loss = model(img, trt)
+            _, loss = model(img, lam, trt1, trt2)
 
             # record loss
             step_loss += loss.item()
@@ -510,7 +507,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         if step % args.log_steps == 0 or step == total_steps:
 
-            acc1 = validate(val_loader, original_model, step, device, args)
+            acc1 = validate(val_loader, model, step, device, args)
 
             # remember best acc@1 and save checkpoint
             is_best = acc1 > best_acc1
@@ -541,7 +538,7 @@ def validate(val_loader, model, step, device, args):
                 target = target.to(device, non_blocking=True)
                 for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
                     # compute output
-                    output, loss = model(img, trt)
+                    output, loss = model(img, 1.0, trt, trt)
 
                     # measure accuracy and record loss
                     acc1, acc5 = accuracy(output, trt, topk=(1, 5))
