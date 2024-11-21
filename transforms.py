@@ -18,16 +18,27 @@ ImageOrVideo = Union[torch.Tensor, PIL.Image.Image, tv_tensors.Image, tv_tensors
 
 
 class TwoHotMixUp:
-    def __init__(self, alpha: float):
+    """This implementation of MixUp returns both targets as class indices instead of
+    class probabilities and reshape & mix-up (prefetch_factor * batch_size) samples
+    into (prefetch_factor) batches at once. Note that this does mean that (prefetch_factor)
+    batches share the same lam(bda) value.
+    """
+
+    def __init__(self, alpha: float, prefetch_factor: int, batch_size: int):
+        self.prefetch_factor = prefetch_factor
+        self.batch_size = batch_size
         self._dist = None
         if alpha:
             self._dist = torch.distributions.Beta(alpha, alpha)
 
     def __call__(self, images, labels):
+        _, *sample_shape = images.shape
+        images = images.reshape(self.prefetch_factor, self.batch_size, *sample_shape)
+        labels = labels.reshape(self.prefetch_factor, self.batch_size)
         if self._dist:
             lam = self._dist.sample()
-            images = images.roll(1, 0).mul_(1.0 - lam).add_(images, alpha=lam)
-            return images, lam, labels, labels.roll(1, 0)
+            images = images.roll(1, dims=1).mul_(1.0 - lam).add_(images, alpha=lam)
+            return images, lam, labels, labels.roll(1, dims=1)
         else:
             return images, 1, labels, labels
 

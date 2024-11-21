@@ -215,7 +215,6 @@ class SimpleVisionTransformer(nn.Module):
         return x
 
     def _loss_fn(self, out: torch.Tensor, lam: float, target1: torch.Tensor, target2: torch.Tensor):
-        n = out.shape[0]
         logprob = F.log_softmax(out, dim=1)
         return lam * F.nll_loss(logprob, target1) + (1.0 - lam) * F.nll_loss(logprob, target2)
 
