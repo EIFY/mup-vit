@@ -27,7 +27,7 @@ from torchvision.transforms import v2
 from torch.utils.data import Subset
 
 from simple_vit import SimpleVisionTransformer
-from transforms import TFInceptionCrop, RandAugment17
+from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
 
 import wandb
 
@@ -39,6 +39,8 @@ parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
                     help='path to dataset (default: imagenet)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
+parser.add_argument('--prefetch-factor', default=1, type=int, metavar='N',
+                    help='number of batches for each worker to prefetch (default: 1)')
 parser.add_argument('--hidden-dim', default=384, type=int, metavar='N',
                     help='Embedding dimension of the ViT (default: 384)')
 parser.add_argument('--input-resolution', default=224, type=int, metavar='RES',
@@ -129,6 +131,14 @@ best_acc1 = 0
 
 def collate(batch, mixup):
     return mixup(*torch.utils.data.default_collate(batch))
+
+
+def chunk(n, device, *tensors):
+    tensors = tuple(t.to(device=device, non_blocking=True) for t in tensors)
+    if n == 1:
+        yield tensors
+    else:
+        yield from zip(*(t.chunk(n) for t in tensors))
 
 
 def main():
@@ -266,7 +276,6 @@ def main_worker(gpu, args):
 
     if args.decoupled_weight_decay:
         args.weight_decay /= args.lr
-    criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.AdamW(
         [
             {"params": wd_params, "weight_decay": args.weight_decay},
@@ -357,21 +366,19 @@ def main_worker(gpu, args):
         train_sampler = None
         val_sampler = None
 
-    collate_fn = None
-    if args.mixup_alpha:
-        mixup = v2.MixUp(alpha=args.mixup_alpha, num_classes=1000)
-        collate_fn = functools.partial(collate, mixup=mixup)
+    mixup = TwoHotMixUp(alpha=args.mixup_alpha, prefetch_factor=args.prefetch_factor, batch_size=args.batch_size)
+    collate_fn = functools.partial(collate, mixup=mixup)
 
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        train_dataset, batch_size=args.prefetch_factor * args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
         collate_fn=collate_fn, drop_last=True, multiprocessing_context='spawn',
-        persistent_workers=True, pin_memory_device=str(device))
+        prefetch_factor=1, persistent_workers=True, pin_memory_device=str(device))
 
     val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=False,
+        val_dataset, batch_size=args.prefetch_factor * args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
-        multiprocessing_context='spawn', pin_memory_device=str(device))
+        multiprocessing_context='spawn', prefetch_factor=1, pin_memory_device=str(device))
 
     warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
@@ -425,12 +432,10 @@ def main_worker(gpu, args):
 
     if args.evaluate:
         # evaluate on validation set.
-        # I got RuntimeError: Found a custom (non-ATen) operator that either mutates or its inputs: aten::record_stream..
-        # if I use the compiled model, so for now I pass in original_model instead.
-        validate(val_loader, original_model, criterion, args.start_step, device, args)
+        validate(val_loader, model, args.start_step, device, args)
         return
 
-    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args)
+    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
 
 
 def infinite_loader(loader, sampler):
@@ -442,51 +447,43 @@ def infinite_loader(loader, sampler):
         epoch += 1
 
 
-def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, criterion, optimizer, scheduler, device, args):
+def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, optimizer, scheduler, device, args):
     batch_time = AverageMeter('Time', device, ':6.3f')
     data_time = AverageMeter('Data', device, ':6.3f')
     losses = AverageMeter('Loss', device, ':.4e')
-    top1 = AverageMeter('Acc@1', device, ':6.2f')
-    top5 = AverageMeter('Acc@5', device, ':6.2f')
     progress = ProgressMeter(
         total_steps,
-        [batch_time, data_time, losses, top1, top5])
+        [batch_time, data_time, losses])
 
     # switch to train mode
     model.train()
     end = time.time()
     best_acc1 = 0
+    # generator moves data to the same device as model
+    gen = (
+        (images, lam, target1, target2) for (img, lam, trt1, trt2) in infinite_loader(train_loader, train_sampler) for images, target1, target2 in zip(
+            img.to(device, non_blocking=True),
+            trt1.to(device, non_blocking=True),
+            trt2.to(device, non_blocking=True))
+    )
 
-    for step, (images, target) in zip(range(start_step + 1, total_steps + 1), infinite_loader(train_loader, train_sampler)):
+    for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
         data_time.update(time.time() - end)
+        step_loss = 0.0
 
-        # move data to the same device as model
-        images = images.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
-        step_loss = step_acc1 = step_acc5 = 0.0
-
-        for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
+        for img, trt1, trt2 in chunk(args.accum_freq, device, images, target1, target2):
             # compute output
-            output = model(img)
-            loss = criterion(output, trt)
+            _, loss = model(img, lam, trt1, trt2)
 
-            # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, trt, topk=(1, 5), class_prob=bool(args.mixup_alpha))
+            # record loss
             step_loss += loss.item()
-            step_acc1 += acc1[0].item()
-            step_acc5 += acc5[0].item()
 
             # compute gradient
             (loss / args.accum_freq).backward()
 
         step_loss /= args.accum_freq
-        step_acc1 /= args.accum_freq
-        step_acc5 /= args.accum_freq
-
         losses.update(step_loss, images.size(0))
-        top1.update(step_acc1, images.size(0))
-        top5.update(step_acc5, images.size(0))
 
         # do SGD step
         l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -508,8 +505,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 samples_per_second = samples_per_second_per_gpu * args.world_size
                 log_data = {
                     "train/loss": step_loss,
-                    'train/acc@1': step_acc1,
-                    'train/acc@5': step_acc5,
                     "data_time": data_time.val,
                     "batch_time": batch_time.val,
                     "samples_per_second": samples_per_second,
@@ -522,7 +517,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         if step % args.log_steps == 0 or step == total_steps:
 
-            acc1 = validate(val_loader, original_model, criterion, step, device, args)
+            acc1 = validate(val_loader, model, step, device, args)
 
             # remember best acc@1 and save checkpoint
             is_best = acc1 > best_acc1
@@ -540,21 +535,19 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         scheduler.step()
 
 
-def validate(val_loader, model, criterion, step, device, args):
+def validate(val_loader, model, step, device, args):
 
     def run_validate(loader, base_progress=0):
         with torch.no_grad():
             torch.cuda.empty_cache()
             end = time.time()
-            for i, (images, target) in enumerate(loader):
+            # generator moves data to the same device as model
+            gen = (b for images, target in loader for b in chunk(args.prefetch_factor, device, images, target))
+            for i, (images, target) in enumerate(gen):
                 i = base_progress + i
-                # move data to the same device as model
-                images = images.to(device, non_blocking=True)
-                target = target.to(device, non_blocking=True)
-                for img, trt in zip(images.chunk(args.accum_freq), target.chunk(args.accum_freq)):
+                for img, trt in chunk(args.accum_freq, device, images, target):
                     # compute output
-                    output = model(img)
-                    loss = criterion(output, trt)
+                    output, loss = model(img, 1.0, trt, trt)
 
                     # measure accuracy and record loss
                     acc1, acc5 = accuracy(output, trt, topk=(1, 5))
@@ -574,7 +567,7 @@ def validate(val_loader, model, criterion, step, device, args):
     top1 = AverageMeter('Acc@1', device, ':6.2f', Summary.AVERAGE)
     top5 = AverageMeter('Acc@5', device, ':6.2f', Summary.AVERAGE)
     progress = ProgressMeter(
-        len(val_loader) + (args.distributed and (len(val_loader.sampler) * args.world_size < len(val_loader.dataset))),
+        args.prefetch_factor * len(val_loader) + (args.distributed and (len(val_loader.sampler) * args.world_size < len(val_loader.dataset))),
         [batch_time, losses, top1, top5],
         prefix='Test: ')
 
@@ -688,17 +681,12 @@ class ProgressMeter(object):
         fmt = '{:' + str(num_digits) + 'd}'
         return '[' + fmt + '/' + fmt.format(num_batches) + ']'
 
-def accuracy(output, target, topk=(1,), class_prob=False):
+def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
         maxk = max(topk)
         batch_size = target.size(0)
         
-        # with e.g. MixUp target is now given by probabilities for each class so we need to convert to class indices
-        if class_prob:
-            _, target = target.topk(1, 1, True, True)
-            target = target.squeeze(dim=1)
-
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
         correct = pred.eq(target.view(1, -1).expand_as(pred))
