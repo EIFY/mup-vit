@@ -39,8 +39,8 @@ parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
                     help='path to dataset (default: imagenet)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--prefetch-factor', default=2, type=int, metavar='N',
-                    help='number of batches for each worker to prefetch (default: 2)')
+parser.add_argument('--prefetch-factor', default=1, type=int, metavar='N',
+                    help='number of batches for each worker to prefetch (default: 1)')
 parser.add_argument('--hidden-dim', default=384, type=int, metavar='N',
                     help='Embedding dimension of the ViT (default: 384)')
 parser.add_argument('--input-resolution', default=224, type=int, metavar='RES',
