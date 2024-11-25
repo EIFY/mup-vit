@@ -1,3 +1,4 @@
+import itertools
 import math
 
 from collections import OrderedDict
@@ -22,17 +23,50 @@ def posemb_sincos_2d(h, w, dim, temperature: int = 10000, dtype = torch.float32)
     return pe.type(dtype)
 
 
+# Adapted from https://github.com/antofuller/CROMA/blob/main/use_croma.py
+# inspired by: https://github.com/ofirpress/attention_with_linear_biases
+def get_slopes(n):
+    def get_slopes_power_of_2(n):
+        start = (2 ** (-2 ** -(math.log2(n) - 3)))
+        ratio = start
+        return [start * ratio ** i for i in range(n)]
+
+    if math.log2(n).is_integer():
+        return get_slopes_power_of_2(n)
+    else:
+        closest_power_of_2 = 2 ** math.floor(math.log2(n))
+        return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2 * closest_power_of_2)[0::2][
+                                                           :n - closest_power_of_2]
+
+
+def get_2dalibi(size):
+    points = list(itertools.product(range(size), range(size)))
+    idxs = []
+    for p1 in points:
+        for p2 in points:
+            dist = math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
+            idxs.append(dist)
+    all_bias = torch.Tensor(idxs).view(len(points), len(points))
+    return all_bias
+
+
+def generate_alibi_bias(num_heads, sizes):
+    seq_length = sum(s ** 2 for s in sizes)
+    mask = torch.block_diag(*[get_2dalibi(s) for s in sizes]).unsqueeze(0)
+    slopes = torch.Tensor(get_slopes(num_heads)).view(num_heads, 1, 1)
+    bias = -slopes * mask
+    return bias
+
+
 def generate_fractal_mask(sizes):
     summary_size = sizes[1]
-    sizes.append(summary_size * sizes[-1])
     mask = torch.block_diag(*[torch.ones(s ** 2, s ** 2) for s in sizes])
-    sizes.pop()
     offset = 0
-    for i, s in enumerate(sizes):
+    for i, s in enumerate(sizes[:-1]):
         factor = summary_size
         next_offset = s ** 2
         next_s = s * summary_size
-        for _ in range(len(sizes) - i):
+        for _ in range(len(sizes) - 1 - i):
             for r_i in range(s):
                 for c_i in range(s):
                     index = offset + r_i * s + c_i
@@ -175,17 +209,17 @@ class SimpleVisionTransformer(nn.Module):
         )
 
         h = w = image_size // patch_size
-        seq_length = h * w
+        self.seq_length = h * w
         if posemb == "sincos2d":
             self.register_buffer("pos_embedding", posemb_sincos_2d(h=h, w=w, dim=hidden_dim))
         elif posemb == "learn":
-            self.pos_embedding = self._learned_embeddings(seq_length)
+            self.pos_embedding = self._learned_embeddings(self.seq_length)
         else:
             self.pos_embedding = None
 
+        sizes = []
         if summary_size:
             s = h
-            sizes = []
             while s > 1:
                 s, mod = divmod(s, summary_size)
                 assert not mod, "Number of patches along height/width must be powers of summary size for now."
@@ -204,16 +238,20 @@ class SimpleVisionTransformer(nn.Module):
                 self.register_buffer("reg", torch.zeros(1, 1, hidden_dim))
             elif self.register > 1:  # Random initialization needed to break the symmetry
                 self.reg = self._learned_embeddings(self.register)
+        sizes.append(h)
 
+        mask = torch.zeros(self.register + self.seq_length, self.register + self.seq_length, dtype=torch.float32)
         if fractal_mask:
             assert summary_size
-            # Note the bitwise-not "~" below. Binary attn_mask for MHA forward pass follows the *opposite* convention
-            # (https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html#torch.nn.MultiheadAttention.forward)
-            # to that of F.scaled_dot_product_attention!
-            # (https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)
-            self.register_buffer("fractal_mask", ~generate_fractal_mask(sizes))
+            bool_fractal_mask = generate_fractal_mask(sizes)
+            mask.masked_fill_(~bool_fractal_mask, -math.inf)
+        if posemb == 'alibi':
+            alibi_bias = generate_alibi_bias(num_heads, sizes)
+            mask = mask + alibi_bias
+        if fractal_mask or posemb == 'alibi':
+            self.register_buffer("mask", mask)
         else:
-            self.fractal_mask = None
+            self.mask = None
 
         self.encoder = Encoder(
             num_layers,
@@ -224,7 +262,6 @@ class SimpleVisionTransformer(nn.Module):
             attention_dropout,
             norm_layer,
         )
-        self.seq_length = seq_length
 
         heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
         if representation_size is None:
@@ -276,12 +313,15 @@ class SimpleVisionTransformer(nn.Module):
     def forward(self, x: torch.Tensor, lam: float, target1: torch.Tensor, target2: torch.Tensor):
         # Reshape and permute the input tensor
         x = self._process_input(x)
+        n = x.shape[0]
         if self.pos_embedding is not None:
             x = x + self.pos_embedding
         if self.register:
-            n = x.shape[0]
             x = torch.cat([torch.tile(self.reg, (n, 1, 1)), x], dim=1)
-        x = self.encoder(x, self.fractal_mask)
+        mask = self.mask
+        if mask is not None and len(mask.shape) == 3:
+            mask = torch.tile(mask, (n, 1, 1))
+        x = self.encoder(x, mask)
         if self.pool_type == 'tok':
             x = x[:, 0]
         else:

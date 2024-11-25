@@ -51,7 +51,7 @@ parser.add_argument('--patch-size', default=16, type=int, metavar='PS')
 parser.add_argument('--num-layers', default=12, type=int, metavar='N')
 parser.add_argument('--num-heads', default=6, type=int, metavar='N')
 parser.add_argument('--posemb', default='sincos2d', type=str,
-                    choices=['none', 'sincos2d', 'learn'])
+                    choices=['none', 'sincos2d', 'learn', 'alibi'])
 parser.add_argument('--mlp-head', action='store_true',
                     help='Use a MLP classification head with one hidden tanh layer '
                          'instead of a single linear layer')
