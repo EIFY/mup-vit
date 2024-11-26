@@ -459,7 +459,7 @@ def main_worker(gpu, args):
 
     if args.evaluate:
         # evaluate on validation set.
-        validate(val_loader, model, args.start_step, device, args)
+        validate(val_loader, original_model, args.start_step, device, args)
         return
 
     train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
@@ -546,10 +546,10 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         if step % args.log_steps == 0 or step in args.specified_steps:
             if args.schedule_free:
                 optimizer.eval()
-                acc1 = validate(val_loader, model, step, device, args)
+                acc1 = validate(val_loader, original_model, step, device, args)
                 optimizer.train()
             else:
-                acc1 = validate(val_loader, model, step, device, args)
+                acc1 = validate(val_loader, original_model, step, device, args)
 
             # remember best acc@1 and save checkpoint
             is_best = acc1 > best_acc1
