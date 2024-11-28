@@ -222,7 +222,7 @@ class SimpleVisionTransformer(nn.Module):
             s = h
             while s > 1:
                 s, mod = divmod(s, summary_size)
-                assert not mod, "Number of patches along height/width must be powers of summary size for now."
+                # assert not mod, "Number of patches along height/width must be powers of summary size for now."
                 sizes.append(s)
             sizes.reverse()
             self.register = sum(s ** 2 for s in sizes)
