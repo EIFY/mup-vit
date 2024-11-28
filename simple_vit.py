@@ -220,10 +220,12 @@ class SimpleVisionTransformer(nn.Module):
         sizes = []
         if summary_size:
             s = h
-            while s > 1:
-                s, mod = divmod(s, summary_size)
-                # assert not mod, "Number of patches along height/width must be powers of summary size for now."
-                sizes.append(s)
+            while True:
+                s //= summary_size
+                if s:
+                    sizes.append(s)
+                else:
+                    break
             sizes.reverse()
             self.register = sum(s ** 2 for s in sizes)
             if posemb == "sincos2d":
