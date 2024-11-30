@@ -612,8 +612,7 @@ def validate(val_loader, model, step, device, args):
                                  range(len(val_loader.sampler) * args.world_size, len(val_loader.dataset)))
         aux_val_loader = torch.utils.data.DataLoader(
             aux_val_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=True, multiprocessing_context='spawn',
-            pin_memory_device=str(device))
+            num_workers=args.workers, pin_memory=True, multiprocessing_context='spawn')
         run_validate(aux_val_loader, len(val_loader))
 
     progress.display_summary()
