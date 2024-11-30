@@ -240,6 +240,7 @@ def main_worker(gpu, args):
             # global rank among all the processes
             args.rank = args.rank * args.ngpus_per_node + gpu
     if args.distributed or args.ngpus_per_node > 1:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.rank)
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
@@ -264,12 +265,8 @@ def main_worker(gpu, args):
         print('using CPU, this will be slow')
         device = torch.device("cpu")
     elif torch.cuda.is_available():
-        torch.cuda.device(args.gpu)
-        model.cuda(args.gpu)
-        device = "cuda"
-        if args.gpu:
-            device += ':{}'.format(args.gpu)
-        device = torch.device(device)
+        model.cuda()
+        device = torch.device("cuda")
         if args.distributed or args.ngpus_per_node > 1:
             # For multiprocessing distributed, DistributedDataParallel constructor
             # should always set the single device scope, otherwise,
@@ -280,11 +277,7 @@ def main_worker(gpu, args):
                 # ourselves based on the total number of GPUs of the current node.
                 args.batch_size = int(args.batch_size / args.ngpus_per_node)
                 args.workers = int((args.workers + args.ngpus_per_node - 1) / args.ngpus_per_node)
-                model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-            else:
-                # DistributedDataParallel will divide and allocate batch_size to all
-                # available GPUs if device_ids are not set
-                model = torch.nn.parallel.DistributedDataParallel(model)
+            model = torch.nn.parallel.DistributedDataParallel(model)
     else:
         device = torch.device("mps")
         model = model.to(device)
@@ -404,12 +397,12 @@ def main_worker(gpu, args):
         train_dataset, batch_size=args.prefetch_factor * args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
         collate_fn=collate_fn, drop_last=True, multiprocessing_context='spawn',
-        prefetch_factor=1, persistent_workers=True, pin_memory_device=str(device))
+        prefetch_factor=1, persistent_workers=True)
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.prefetch_factor * args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
-        multiprocessing_context='spawn', prefetch_factor=1, pin_memory_device=str(device))
+        multiprocessing_context='spawn', prefetch_factor=1)
 
     if args.schedule_free:
         scheduler = None
@@ -422,17 +415,9 @@ def main_worker(gpu, args):
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
-            if args.gpu is None:
-                checkpoint = torch.load(args.resume)
-            elif torch.cuda.is_available():
-                # Map model to be loaded to specified single gpu.
-                loc = 'cuda:{}'.format(args.gpu)
-                checkpoint = torch.load(args.resume, map_location=loc)
+            checkpoint = torch.load(args.resume, map_location=device)
             args.start_step = checkpoint['step']
             best_acc1 = checkpoint['best_acc1']
-            if args.gpu is not None:
-                # best_acc1 may be from a checkpoint from a different GPU
-                best_acc1 = best_acc1.to(args.gpu)
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             if not args.schedule_free:
