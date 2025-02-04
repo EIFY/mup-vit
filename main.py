@@ -102,12 +102,17 @@ parser.add_argument('--grad-clip-norm', type=float, default=1.0,
 parser.add_argument('--torchvision-inception-crop', action='store_true',
                     help="Switch back to torchvision's RandomResizedCrop(), "
                          'which actually improves the model')
+parser.add_argument('--lower-scale', type=float, default=0.05,
+                    help="Lower bound of the area of the Inception crop (default: 0.05)")
+parser.add_argument('--upper-scale', type=float, default=1.0,
+                    help="Upper bound of the area of the Inception crop (default: 1.0)")
 parser.add_argument('--mixup-alpha', default=0.2, type=float,
                     help='Beta distribution shape parameter for the MixUp (default: 0.2). '
                          'Use 0.0 to turn MixUp off.')
 parser.add_argument('--randaug', default=True,
                     action=argparse.BooleanOptionalAction,
                     help='Use RandAug (default: True)')
+parser.add_argument("--randaug-magnitude", default=10, type=int)
 parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
@@ -350,12 +355,12 @@ def main_worker(gpu, args):
             "SolarizeAdd": (lambda num_bins, height, width: torch.linspace(0., 110., num_bins), False),  # New
             "Cutout": (lambda num_bins, height, width: torch.linspace(0., float(cutout_const), num_bins), False),  # New
         }
-        randaug = RandAugment17(2, 10, num_magnitude_bins=MAX_LEVEL + 1, fill=[128] * 3)
+        randaug = RandAugment17(2, args.randaug_magnitude, num_magnitude_bins=MAX_LEVEL + 1, fill=[128] * 3)
         inception_crop = v2.RandomResizedCrop if args.torchvision_inception_crop else TFInceptionCrop
 
         transform = [
             v2.ToImage(),
-            inception_crop(args.input_resolution, scale=(0.05, 1.0)),
+            inception_crop(args.input_resolution, scale=(args.lower_scale, args.upper_scale)),
             v2.RandomHorizontalFlip()
         ]
         if args.randaug:
