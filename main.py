@@ -96,7 +96,8 @@ parser.add_argument("--report-to", default='', type=str,
                     help="Options are ['wandb']")
 parser.add_argument("--wandb-notes", default='', type=str,
                     help="Notes if logging with wandb")
-parser.add_argument('--curriculum', action='store_true', help="use curriculum learning")
+parser.add_argument('--curriculum', default=None, type=str, choices=['harder', 'easier'],
+                    help="use curriculum learning")
 parser.add_argument('--only', action='store_true', help="only use transforms that take magnitude as a parameter")
 best_acc1 = 0
 
@@ -330,7 +331,10 @@ def main_worker(gpu, args):
         MAX_LEVEL = args.epochs
 
         def epoch_loader():
-            for epoch in range(args.epochs + 1):
+            epochs = range(args.epochs + 1)
+            if args.curriculum == 'easier':
+                epochs = reversed(epochs)
+            for epoch in epochs:
                 randaug = RandAugment17(2, epoch, num_magnitude_bins=MAX_LEVEL + 1, fill=[128] * 3)
 
                 train_dataset = datasets.ImageNet(
