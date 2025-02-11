@@ -56,6 +56,7 @@ class TFInceptionCrop(Transform):
         interpolation: Union[InterpolationMode, int] = InterpolationMode.BILINEAR,
         antialias: Optional[bool] = True,
         max_attempts: int = 100,
+        power: float = 2.0,
     ) -> None:
         super().__init__()
         self.size = _setup_size(size, error_msg="Please provide only two dimensions (h, w) for size.")
@@ -72,13 +73,11 @@ class TFInceptionCrop(Transform):
         self.interpolation = interpolation
         self.antialias = antialias
         self.max_attempts = max_attempts
+        self.power = power
 
         self._ratio = torch.tensor(self.ratio)
 
     def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
-        """Almost line-by-line translation of the core logic of
-        tensorflow/core/kernels/image/sample_distorted_bounding_box_op.cc
-        """
         original_height, original_width = query_size(flat_inputs)
         original_area = original_height * original_width
         min_area = self.scale[0] * original_area
@@ -91,29 +90,17 @@ class TFInceptionCrop(Transform):
                 ratio[1],  # type: ignore[arg-type]
             ).item()
 
-            min_height = round(math.sqrt(min_area / aspect_ratio))
-            max_height = round(math.sqrt(max_area / aspect_ratio))
+            min_value = (min_area / aspect_ratio) ** (1 / self.power)
+            max_value = (max_area / aspect_ratio) ** (1 / self.power)
 
-            # TODO(b/140767341): Rewrite the generation logic to be more tolerant
-            # of floating point behavior.
-            if round(max_height * aspect_ratio) > original_width:
-                # We must find the smallest max_height satisfying
-                # round(max_height * aspect_ratio) <= original_width:
-                EPSILON = 0.0000001
-                max_height = int((original_width + 0.5 - EPSILON) / aspect_ratio)
-                # If due to some precision issues, we still cannot guarantee
-                # round(max_height * aspect_ratio) <= original_width, subtract 1 from
-                # max height.
-                if round(max_height * aspect_ratio) > original_width:
-                    max_height -= 1
+            value = torch.empty(1).uniform_(
+                min_value,  # type: ignore[arg-type]
+                max_value,  # type: ignore[arg-type]
+            ).item()
 
-            max_height = min(max_height, original_height)
-            min_height = min(min_height, max_height)
-
-            # We need to generate a random number in the closed range
-            # [min_height, max_height].
-            height = torch.randint(min_height, max_height + 1, size=(1,)).item()
+            height = value ** (self.power / 2.0)
             width = round(height * aspect_ratio)
+            height = round(height)
 
             # Let us not fail if rounding error causes the area to be
             # outside the constraints.

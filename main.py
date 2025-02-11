@@ -99,9 +99,11 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
+parser.add_argument('--inception-crop-power', type=float, default=2.0,
+                    help="Sample area ** (1/power) uniformly. 2.0 for TF-style, "
+                         "1.0 for PyTorch-style")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
-                    help="Switch back to torchvision's RandomResizedCrop(), "
-                         'which actually improves the model')
+                    help="Switch back to torchvision's RandomResizedCrop()")
 parser.add_argument('--lower-scale', type=float, default=0.05,
                     help="Lower bound of the area of the Inception crop (default: 0.05)")
 parser.add_argument('--upper-scale', type=float, default=1.0,
@@ -356,11 +358,19 @@ def main_worker(gpu, args):
             "Cutout": (lambda num_bins, height, width: torch.linspace(0., float(cutout_const), num_bins), False),  # New
         }
         randaug = RandAugment17(2, args.randaug_magnitude, num_magnitude_bins=MAX_LEVEL + 1, fill=[128] * 3)
-        inception_crop = v2.RandomResizedCrop if args.torchvision_inception_crop else TFInceptionCrop
+        inception_crop_param = dict(
+            size=args.input_resolution,
+            scale=(args.lower_scale, args.upper_scale)
+        )
+        if args.torchvision_inception_crop:
+            inception_crop = v2.RandomResizedCrop(**inception_crop_param)
+        else:
+            inception_crop_param['power'] = args.inception_crop_power
+            inception_crop = TFInceptionCrop(**inception_crop_param)
 
         transform = [
             v2.ToImage(),
-            inception_crop(args.input_resolution, scale=(args.lower_scale, args.upper_scale)),
+            inception_crop,
             v2.RandomHorizontalFlip()
         ]
         if args.randaug:
