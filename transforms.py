@@ -80,7 +80,9 @@ class TFInceptionCrop(Transform):
         tensorflow/core/kernels/image/sample_distorted_bounding_box_op.cc
         """
         original_height, original_width = query_size(flat_inputs)
-        area = original_height * original_width
+        original_area = original_height * original_width
+        min_area = self.scale[0] * original_area
+        max_area = self.scale[1] * original_area
 
         ratio = self._ratio
         for _ in range(self.max_attempts):
@@ -88,9 +90,6 @@ class TFInceptionCrop(Transform):
                 ratio[0],  # type: ignore[arg-type]
                 ratio[1],  # type: ignore[arg-type]
             ).item()
-
-            min_area = self.scale[0] * area
-            max_area = self.scale[1] * area
 
             min_height = round(math.sqrt(min_area / aspect_ratio))
             max_height = round(math.sqrt(max_area / aspect_ratio))
