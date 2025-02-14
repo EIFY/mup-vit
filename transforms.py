@@ -92,6 +92,8 @@ class TFInceptionCrop(Transform):
 
             min_value = (min_area / aspect_ratio) ** (1 / self.power)
             max_value = (max_area / aspect_ratio) ** (1 / self.power)
+            max_value = min(max_value, original_height ** (2.0 / self.power))
+            min_value = min(min_value, max_value)
 
             value = torch.empty(1).uniform_(
                 min_value,  # type: ignore[arg-type]
