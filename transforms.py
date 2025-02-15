@@ -43,6 +43,91 @@ class TwoHotMixUp:
             return images, 1, labels, labels
 
 
+class BetaCrop(Transform):
+    def __init__(
+        self,
+        size: Union[int, Sequence[int]],
+        scale: Tuple[float, float] = (0.08, 1.0),
+        ratio: Tuple[float, float] = (3.0 / 4.0, 4.0 / 3.0),
+        interpolation: Union[InterpolationMode, int] = InterpolationMode.BILINEAR,
+        antialias: Optional[bool] = True,
+        max_attempts: int = 100,
+        alpha: float = 1.0,
+        beta: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.size = _setup_size(size, error_msg="Please provide only two dimensions (h, w) for size.")
+
+        if not isinstance(scale, Sequence):
+            raise TypeError("Scale should be a sequence")
+        if not isinstance(ratio, Sequence):
+            raise TypeError("Ratio should be a sequence")
+        if (scale[0] > scale[1]) or (ratio[0] > ratio[1]):
+            warnings.warn("Scale and ratio should be of kind (min, max)")
+
+        self.scale = scale
+        self.ratio = ratio
+        self.interpolation = interpolation
+        self.antialias = antialias
+        self.max_attempts = max_attempts
+        self._dist = torch.distributions.Beta(torch.tensor([alpha]), torch.tensor([beta]))
+
+        self._log_ratio = torch.log(torch.tensor(self.ratio))
+
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
+        original_height, original_width = query_size(flat_inputs)
+        original_area = original_height * original_width
+        in_ratio = float(original_width) / float(original_height)
+        min_area = self.scale[0] * original_area
+        max_area = self.scale[1] * original_area
+
+        # If the input aspect ratio is out of the range,
+        # we can never take the full image.
+        if in_ratio > self.ratio[1]:
+            max_area = min(max_area, float(original_height ** 2 * self.ratio[1]))
+        elif in_ratio < self.ratio[0]:
+            max_area = min(max_area, float(original_width ** 2 / self.ratio[0]))
+
+        log_ratio = self._log_ratio
+        for _ in range(self.max_attempts):
+            aspect_ratio = torch.exp(
+                torch.empty(1).uniform_(
+                    log_ratio[0],  # type: ignore[arg-type]
+                    log_ratio[1],  # type: ignore[arg-type]
+                )
+            ).item()
+
+            area = min_area + (max_area - min_area) * float(self._dist.sample(()))
+            height = round((area / aspect_ratio) ** 0.5)
+            width = round((area * aspect_ratio) ** 0.5)
+
+            # If the constraints can be satisfied: break out of the loop.
+            if 0 < width <= original_width and 0 < height <= original_height and min_area <= area <= max_area:
+                i = torch.randint(0, original_height - height + 1, size=(1,)).item()
+                j = torch.randint(0, original_width - width + 1, size=(1,)).item()
+                break
+        else:
+            # Fallback to central crop
+            if in_ratio < min(self.ratio):
+                width = original_width
+                height = int(round(width / min(self.ratio)))
+            elif in_ratio > max(self.ratio):
+                height = original_height
+                width = int(round(height * max(self.ratio)))
+            else:  # whole image
+                width = original_width
+                height = original_height
+            i = (original_height - height) // 2
+            j = (original_width - width) // 2
+
+        return dict(top=i, left=j, height=height, width=width)
+
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return self._call_kernel(
+            F.resized_crop, inpt, **params, size=self.size, interpolation=self.interpolation, antialias=self.antialias
+        )
+
+
 class TFInceptionCrop(Transform):
     """TensorFlow-style Inception crop, i.e. tf.slice() with the bbox returned by
     tf.image.sample_distorted_bounding_box(). Note that get_params() is not supported. 

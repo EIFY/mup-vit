@@ -30,7 +30,7 @@ import schedulefree
 import wandb
 
 from simple_vit import SimpleVisionTransformer
-from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
+from transforms import BetaCrop, TwoHotMixUp, TFInceptionCrop, RandAugment17
 
 
 # "(...)/python3.10/site-packages/torch/_inductor/compile_fx.py:140: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance."
@@ -99,9 +99,9 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
-parser.add_argument('--torchvision-inception-crop', action='store_true',
-                    help="Switch back to torchvision's RandomResizedCrop(), "
-                         'which actually improves the model')
+parser.add_argument('--inception-crop', default='tf', type=str, choices=['tf', 'torch', 'beta'])
+parser.add_argument('--crop-alpha', type=float, default=1.0)
+parser.add_argument('--crop-beta', type=float, default=1.0)
 parser.add_argument('--lower-scale', type=float, default=0.05,
                     help="Lower bound of the area of the Inception crop (default: 0.05)")
 parser.add_argument('--upper-scale', type=float, default=1.0,
@@ -356,11 +356,17 @@ def main_worker(gpu, args):
             "Cutout": (lambda num_bins, height, width: torch.linspace(0., float(cutout_const), num_bins), False),  # New
         }
         randaug = RandAugment17(2, args.randaug_magnitude, num_magnitude_bins=MAX_LEVEL + 1, fill=[128] * 3)
-        inception_crop = v2.RandomResizedCrop if args.torchvision_inception_crop else TFInceptionCrop
+
+        if args.inception_crop == 'tf':
+            inception_crop = TFInceptionCrop(args.input_resolution, scale=(args.lower_scale, args.upper_scale))
+        elif args.inception_crop == 'torch':
+            inception_crop = v2.RandomResizedCrop(args.input_resolution, scale=(args.lower_scale, args.upper_scale))
+        else:
+            inception_crop = BetaCrop(args.input_resolution, scale=(args.lower_scale, args.upper_scale), alpha=args.crop_alpha, beta=args.crop_beta)
 
         transform = [
             v2.ToImage(),
-            inception_crop(args.input_resolution, scale=(args.lower_scale, args.upper_scale)),
+            inception_crop,
             v2.RandomHorizontalFlip()
         ]
         if args.randaug:
