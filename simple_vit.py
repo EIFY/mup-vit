@@ -148,7 +148,7 @@ class SimpleVisionTransformer(nn.Module):
             self.reg = self._learned_embeddings(self.register)
 
         self.conv_proj = nn.Conv2d(
-            in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
+            in_channels=1, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
         )
 
         h = w = image_size // patch_size

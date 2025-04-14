@@ -36,20 +36,20 @@ from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
 # "(...)/python3.10/site-packages/torch/_inductor/compile_fx.py:140: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance."
 torch.set_float32_matmul_precision('high')
 
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',
-                    help='path to dataset (default: imagenet)')
+parser = argparse.ArgumentParser(description='PyTorch MNIST Training')
+parser.add_argument('data', metavar='DIR', nargs='?', default='mnist',
+                    help='path to dataset (default: mnist)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--prefetch-factor', default=1, type=int, metavar='N',
                     help='number of batches for each worker to prefetch (default: 1)')
-parser.add_argument('--hidden-dim', default=384, type=int, metavar='N',
+parser.add_argument('--hidden-dim', default=64, type=int, metavar='N',
                     help='Embedding dimension of the ViT (default: 384)')
-parser.add_argument('--input-resolution', default=224, type=int, metavar='RES',
+parser.add_argument('--input-resolution', default=28, type=int, metavar='RES',
                     help='Input resolution, i.e. train/val crop size (default: 224)')
-parser.add_argument('--patch-size', default=16, type=int, metavar='PS')
-parser.add_argument('--num-layers', default=12, type=int, metavar='N')
-parser.add_argument('--num-heads', default=6, type=int, metavar='N')
+parser.add_argument('--patch-size', default=7, type=int, metavar='PS')
+parser.add_argument('--num-layers', default=3, type=int, metavar='N')
+parser.add_argument('--num-heads', default=8, type=int, metavar='N')
 parser.add_argument('--posemb', default='sincos2d', type=str,
                     choices=['none', 'sincos2d', 'learn'])
 parser.add_argument('--mlp-head', action='store_true',
@@ -62,15 +62,15 @@ parser.add_argument('--pool-type', default='gap', type=str, choices=['gap', 'tok
 parser.add_argument('--register', default=0, type=int, metavar='N',
                     help='Number of registers (additional tokens), see '
                          'https://arxiv.org/abs/2309.16588')
-parser.add_argument('--epochs', default=90, type=int, metavar='N',
-                    help='number of total epochs to run')
-parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
+parser.add_argument('--total-steps', default=1000, type=int, metavar='N',
+                    help='number of total steps to train')
+parser.add_argument('--log-steps', default=100, type=int, metavar='N',
                     help='eval and log every N steps')
 parser.add_argument('--log-epoch', nargs='*', default=[], type=int,
                     help='eval and log at the specified epochs.')
 parser.add_argument('--start-step', default=0, type=int, metavar='N',
                     help='manual step number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=128, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
@@ -79,7 +79,7 @@ parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
 parser.add_argument('--schedule-free', action='store_true',
                     help='Use schedule-free AdamW optimizer (https://arxiv.org/abs/2405.15682).')
-parser.add_argument("--warmup", default=10000, type=int,
+parser.add_argument("--warmup", default=500, type=int,
                     help="Number of steps to warmup for.")
 parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
@@ -99,20 +99,9 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
-parser.add_argument('--torchvision-inception-crop', action='store_true',
-                    help="Switch back to torchvision's RandomResizedCrop(), "
-                         'which actually improves the model')
-parser.add_argument('--lower-scale', type=float, default=0.05,
-                    help="Lower bound of the area of the Inception crop (default: 0.05)")
-parser.add_argument('--upper-scale', type=float, default=1.0,
-                    help="Upper bound of the area of the Inception crop (default: 1.0)")
 parser.add_argument('--mixup-alpha', default=0.2, type=float,
                     help='Beta distribution shape parameter for the MixUp (default: 0.2). '
                          'Use 0.0 to turn MixUp off.')
-parser.add_argument('--randaug', default=True,
-                    action=argparse.BooleanOptionalAction,
-                    help='Use RandAug (default: True)')
-parser.add_argument("--randaug-magnitude", default=10, type=int)
 parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
@@ -314,77 +303,27 @@ def main_worker(gpu, args):
     # Data loading code
     if args.fake_data:
         print("=> Fake data is used!")
-        input_shape = (3, args.input_resolution, args.input_resolution)
+        input_shape = (1, args.input_resolution, args.input_resolution)
         transform = v2.Compose([
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
         ])
-        train_dataset = datasets.FakeData(1281167, input_shape, 1000, transform)
-        val_dataset = datasets.FakeData(50000, input_shape, 1000, transform)
+        train_dataset = datasets.FakeData(60000, input_shape, 10, transform)
+        val_dataset = datasets.FakeData(10000, input_shape, 10, transform)
     else:
         value_range = v2.Normalize(
-            mean=[0.5] * 3,
-            std=[0.5] * 3)
-
-        cutout_const = 40
-        translate_const = 100
-        MAX_LEVEL = 10
-
-        translate_magnitude = lambda num_bins, _h, _w: torch.linspace(0.0, translate_const, num_bins)
-        shear_magnitude = lambda num_bins, _h, _w: torch.linspace(0.0, 0.3, num_bins)
-        enhance_magnitude = lambda num_bins, _h, _w: torch.linspace(0, 0.9, num_bins)  # It was -0.9, 0.9 but negative magnitude results in the opposite effect.
-
-        RandAugment17._AUGMENTATION_SPACE = {
-            "TranslateX": (translate_magnitude, True),
-            "TranslateY": (translate_magnitude, True),
-            "ShearX": (shear_magnitude, True),
-            "ShearY": (shear_magnitude, True),
-            "Rotate": (lambda num_bins, height, width: torch.linspace(0.0, 30.0, num_bins), True),
-            "Brightness": (enhance_magnitude, False),
-            "Color": (enhance_magnitude, False),
-            "Contrast": (enhance_magnitude, False),
-            "Sharpness": (enhance_magnitude, False),
-            "Posterize": (  # Unchanged
-                lambda num_bins, height, width: (8 - (torch.arange(num_bins) / ((num_bins - 1) / 4))).round().int(),
-                False,
-            ),
-            "Solarize": (lambda num_bins, height, width: torch.linspace(1.0, 0.0, num_bins), False),  # Unchanged
-            "AutoContrast": (lambda num_bins, height, width: None, False),  # Unchanged
-            "Equalize": (lambda num_bins, height, width: None, False),  # Unchanged
-            "Invert": (lambda num_bins, height, width: None, False),  # "New" (equivalent to MAX_LEVEL Solarize)
-            "SolarizeAdd": (lambda num_bins, height, width: torch.linspace(0., 110., num_bins), False),  # New
-            "Cutout": (lambda num_bins, height, width: torch.linspace(0., float(cutout_const), num_bins), False),  # New
-        }
-        randaug = RandAugment17(2, args.randaug_magnitude, num_magnitude_bins=MAX_LEVEL + 1, fill=[128] * 3)
-        inception_crop = v2.RandomResizedCrop if args.torchvision_inception_crop else TFInceptionCrop
-
-        transform = [
+            mean=[0.5],
+            std=[0.5])
+        transform = v2.Compose([
             v2.ToImage(),
-            inception_crop(args.input_resolution, scale=(args.lower_scale, args.upper_scale)),
-            v2.RandomHorizontalFlip()
-        ]
-        if args.randaug:
-            transform.append(randaug)
-        transform.extend([
             v2.ToDtype(torch.float32, scale=True),
             value_range
         ])
-
-        train_dataset = datasets.ImageNet(args.data, split='train', transform=v2.Compose(transform))
-
-        val_dataset = datasets.ImageNet(
-            args.data,
-            split='val',
-            transform=v2.Compose([
-                v2.ToImage(),
-                v2.Resize(256),
-                v2.CenterCrop(args.input_resolution),
-                v2.ToDtype(torch.float32, scale=True),
-                value_range,
-            ]))
+        train_dataset = datasets.MNIST(args.data, train=True, transform=transform, download=True)
+        val_dataset = datasets.MNIST(args.data, train=False, transform=transform, download=True)
 
     n = len(train_dataset)
-    total_steps = round(n * args.epochs / args.total_batch_size)
+    total_steps = args.total_steps
     args.specified_steps = {round(n * epoch / args.total_batch_size) for epoch in args.log_epoch}
     args.specified_steps.add(total_steps)
 
