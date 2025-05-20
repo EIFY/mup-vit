@@ -3,6 +3,7 @@ import math
 from collections import OrderedDict
 from functools import partial
 from typing import Callable, Optional
+import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -44,7 +45,10 @@ class EncoderBlock(nn.Module):
 
         # MLP block
         self.ln_2 = norm_layer(hidden_dim)
-        self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout)
+        self.expand, mod = divmod(mlp_dim, hidden_dim)
+        if mod:
+            raise ValueError('MLP dimension is not multiple of hidden dimension!')
+        self.mlp = MLPBlock(mlp_dim, mlp_dim, dropout)
 
         # Fix init discrepancy between nn.MultiheadAttention and that of big_vision
         bound = math.sqrt(3 / hidden_dim)
@@ -57,9 +61,10 @@ class EncoderBlock(nn.Module):
         x, _ = self.self_attention(x, x, x, need_weights=False)
         x = self.dropout(x)
         x = x + input
-
         y = self.ln_2(x)
+        y = einops.rearrange(y, 'b (s e) d -> b s (e d)', e=self.expand)
         y = self.mlp(y)
+        y = einops.rearrange(y, 'b s (e d) -> b (s e) d', e=self.expand)
         return x + y
 
 
