@@ -44,10 +44,13 @@ class EncoderBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # MLP block
-        self.ln_2 = norm_layer(hidden_dim)
-        self.expand, mod = divmod(mlp_dim, hidden_dim)
+        self.ln_2 = norm_layer(mlp_dim)
+        expand, mod = divmod(mlp_dim, hidden_dim)
         if mod:
             raise ValueError('MLP dimension is not multiple of hidden dimension!')
+        self.ps = math.isqrt(expand)
+        if self.ps ** 2 != expand:
+            raise ValueError('Expansion factor is not a square number!')
         self.mlp = MLPBlock(mlp_dim, mlp_dim, dropout)
 
         # Fix init discrepancy between nn.MultiheadAttention and that of big_vision
@@ -57,14 +60,16 @@ class EncoderBlock(nn.Module):
 
     def forward(self, input: torch.Tensor):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
+        seq_length = input.shape[1]
+        s = math.isqrt(seq_length) // self.ps
         x = self.ln_1(input)
         x, _ = self.self_attention(x, x, x, need_weights=False)
         x = self.dropout(x)
         x = x + input
-        y = self.ln_2(x)
-        y = einops.rearrange(y, 'b (s e) d -> b s (e d)', e=self.expand)
+        y = einops.rearrange(x, 'b (s1 p1 s2 p2) d -> b (s1 s2) (p1 p2 d)', s1=s, p1=self.ps, p2=self.ps)
+        y = self.ln_2(y)
         y = self.mlp(y)
-        y = einops.rearrange(y, 'b s (e d) -> b (s e) d', e=self.expand)
+        y = einops.rearrange(y, 'b (s1 s2) (p1 p2 d) -> b (s1 p1 s2 p2) d', s1=s, p1=self.ps, p2=self.ps)
         return x + y
 
 
