@@ -6,7 +6,6 @@ from typing import Callable, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models.vision_transformer import MLPBlock
 
 
 # Taken from https://github.com/lucidrains/vit-pytorch, likely ported from https://github.com/google-research/big_vision/
@@ -20,6 +19,52 @@ def posemb_sincos_2d(h, w, dim, temperature: int = 10000, dtype = torch.float32)
     x = x.flatten()[:, None] * omega[None, :]
     pe = torch.cat((x.sin(), x.cos(), y.sin(), y.cos()), dim=1)
     return pe.type(dtype)
+
+
+class ScaledGELU(nn.Module):
+    def forward(self, input: torch.Tensor):
+        return math.sqrt(2) * F.gelu(input)
+
+
+class MLPBlock(nn.Sequential):
+    def __init__(self, in_dim: int, mlp_dim: int, dropout: float):
+        layers = [
+            nn.Linear(in_dim, mlp_dim),
+            ScaledGELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_dim, in_dim),
+            nn.Dropout(dropout),
+        ]
+        super().__init__(*layers)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.normal_(m.bias, std=1e-6)
+
+
+class SelfAttention(nn.Module):
+    """Muon-friendly with merged QKV weights"""
+
+    def __init__(self, hidden_dim: int, num_heads: int, dropout: float = 0.0):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+
+        # Follow big_vision's init
+        bound = math.sqrt(3 / hidden_dim)
+        self.qkv_w = nn.Parameter(torch.empty(3, hidden_dim, hidden_dim).uniform_(-bound, bound))
+        self.out = nn.Linear(hidden_dim, hidden_dim)
+        nn.init.uniform_(self.out.weight, -bound, bound)
+
+    def forward(self, x: torch.Tensor):
+        B, T = x.size(0), x.size(1) # batch size, sequence length
+        q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, -1).chunk(3, dim=-2)
+        y = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), dropout_p=self.dropout).transpose(1, 2)
+        y = y.contiguous().view(B, T, self.hidden_dim)
+        y = self.out(y)
+        return y
 
 
 class EncoderBlock(nn.Module):
@@ -39,22 +84,18 @@ class EncoderBlock(nn.Module):
 
         # Attention block
         self.ln_1 = norm_layer(hidden_dim)
-        self.self_attention = nn.MultiheadAttention(hidden_dim, num_heads, dropout=attention_dropout, batch_first=True)
+        self.self_attention = SelfAttention(hidden_dim, num_heads, dropout=attention_dropout)
         self.dropout = nn.Dropout(dropout)
 
         # MLP block
         self.ln_2 = norm_layer(hidden_dim)
         self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout)
 
-        # Fix init discrepancy between nn.MultiheadAttention and that of big_vision
-        bound = math.sqrt(3 / hidden_dim)
-        nn.init.uniform_(self.self_attention.in_proj_weight, -bound, bound)
-        nn.init.uniform_(self.self_attention.out_proj.weight, -bound, bound)
 
     def forward(self, input: torch.Tensor):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
         x = self.ln_1(input)
-        x, _ = self.self_attention(x, x, x, need_weights=False)
+        x = self.self_attention(x)
         x = self.dropout(x)
         x = x + input
 
@@ -127,7 +168,7 @@ class SimpleVisionTransformer(nn.Module):
         representation_size: Optional[int] = None,
         pool_type: str = "gap",
         register: int = 0,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        norm_layer: Callable[..., torch.nn.Module] = partial(nn.RMSNorm, eps=1e-6, elementwise_affine=False),
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
