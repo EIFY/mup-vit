@@ -26,7 +26,7 @@ import torchvision.models as models
 from torchvision.transforms import v2
 from torch.utils.data import Subset
 
-import schedulefree
+from talon import Scion
 import wandb
 
 from simple_vit import SimpleVisionTransformer
@@ -81,7 +81,7 @@ parser.add_argument('--schedule-free', action='store_true',
                     help='Use schedule-free AdamW optimizer (https://arxiv.org/abs/2405.15682).')
 parser.add_argument("--warmup", default=10000, type=int,
                     help="Number of steps to warmup for.")
-parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.006, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--beta1', default=0.9, type=float,
                     help='beta1 for AdamW')
@@ -262,8 +262,6 @@ def main_worker(gpu, args):
         register=args.register,
     )
 
-    wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
-    non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
     args.total_batch_size = args.batch_size
 
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
@@ -290,26 +288,38 @@ def main_worker(gpu, args):
     if args.decoupled_weight_decay:
         args.weight_decay /= args.lr
 
-    params = [
-        {"params": wd_params, "weight_decay": args.weight_decay},
-        {"params": non_wd_params, "weight_decay": 0.},
-    ]
+    patchifier = []
+    hidden = []
+    output = []
 
-    if args.schedule_free:
-        optimizer = schedulefree.AdamWScheduleFree(
-            params,
-            lr=args.lr,
-            betas=(args.beta1, args.beta2),
-            warmup_steps=args.warmup,
-            r=args.polynomial_weighting_power,
-        )
-        optimizer.train()
-    else:
-        optimizer = torch.optim.AdamW(
-            params,
-            lr=args.lr,
-            betas=(args.beta1, args.beta2)
-        )
+    for n, p in model.named_parameters():
+        if n == "conv_proj.weight":
+            patchifier.append(p)
+        elif n == "heads.head.weight":
+            output.append(p)
+        else:
+            hidden.append(p)
+
+    non_sign_radius = 1
+    sign_radius = 20
+
+    optim_groups = [{
+        'params': patchifier,
+        'norm': 'SpectralPatchifier',
+        'scale': non_sign_radius,
+    }, {
+        'params': hidden,
+        'norm': 'Auto', # Picks layerwise norm based on the parameter shape
+        'scale': non_sign_radius,
+    }, {
+        'params': output,
+        'norm': 'Sign',
+        'norm_kwargs': {'zero_init': True},
+        'scale': sign_radius,
+    }]
+
+    optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, unconstrained=True)
+    optimizer.init()
 
     # Data loading code
     if args.fake_data:
@@ -412,9 +422,12 @@ def main_worker(gpu, args):
     if args.schedule_free:
         scheduler = None
     else:
-        warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
-        scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
+        if args.warmup:
+            warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
+            scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
+        else:
+            scheduler = cosine
 
     # optionally resume from a checkpoint
     if args.resume:
