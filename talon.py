@@ -406,7 +406,7 @@ def PolarExpress(G: torch.Tensor, steps: int) -> torch.Tensor:
     assert G.ndim >= 2
     X = G.bfloat16() # for speed
     if G.size(-2) > G.size(-1): X = X.mT  # this reduces FLOPs
-    X = X / (X.norm(dim=(-2, -1), keepdim = True) + eps)
+    X = X / (X.norm(dim=(-2, -1), keepdim = True) * 1.01 + eps)
     hs = coeffs_list[:steps] + list(itertools.repeat(coeffs_list[-1], steps - len(coeffs_list)))
     for a, b, c in hs:
         A = X @ X.mT
