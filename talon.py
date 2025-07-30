@@ -307,10 +307,8 @@ class Scion(torch.optim.Optimizer):
         for group in self.param_groups:
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
             init_func = norm_backend.init
-            scale = group['scale']
             for p in group['params']:
                 init_func(p)
-                p.data *= scale
 
 
 class ScionLight(torch.optim.Optimizer):

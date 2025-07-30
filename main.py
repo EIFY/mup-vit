@@ -85,6 +85,10 @@ parser.add_argument('--lr', '--learning-rate', default=0.006, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--constrained', action='store_true', default=False,
                     help='Use constrained Scion instead of unconstrained Scion')
+parser.add_argument('--non-sign-radius', default=1., type=float,
+                    help='Radius for patchifier and hidden layers')
+parser.add_argument('--sign-radius', default=20., type=float,
+                    help='Radius for the output layer')
 parser.add_argument('--beta1', default=0.9, type=float,
                     help='beta1 for AdamW')
 parser.add_argument('--beta2', default=0.999, type=float,
@@ -302,22 +306,19 @@ def main_worker(gpu, args):
         else:
             hidden.append(p)
 
-    non_sign_radius = 1
-    sign_radius = 20
-
     optim_groups = [{
         'params': patchifier,
         'norm': 'SpectralPatchifier',
-        'scale': non_sign_radius,
+        'scale': args.non_sign_radius,
     }, {
         'params': hidden,
         'norm': 'Auto', # Picks layerwise norm based on the parameter shape
-        'scale': non_sign_radius,
+        'scale': args.non_sign_radius,
     }, {
         'params': output,
         'norm': 'Sign',
         'norm_kwargs': {'zero_init': True},
-        'scale': sign_radius,
+        'scale': args.sign_radius,
     }]
 
     optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, unconstrained=not args.constrained)
