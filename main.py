@@ -83,8 +83,8 @@ parser.add_argument("--warmup", default=10000, type=int,
                     help="Number of steps to warmup for.")
 parser.add_argument('--lr', '--learning-rate', default=0.006, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
-parser.add_argument('--constrained', action='store_true', default=False,
-                    help='Use constrained Scion instead of unconstrained Scion')
+parser.add_argument('--corrected', action='store_true', default=False,
+                    help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
 parser.add_argument('--non-sign-radius', default=1., type=float,
                     help='Radius for patchifier and hidden layers')
 parser.add_argument('--sign-radius', default=20., type=float,
@@ -309,19 +309,19 @@ def main_worker(gpu, args):
     optim_groups = [{
         'params': patchifier,
         'norm': 'SpectralPatchifier',
-        'scale': args.non_sign_radius,
+        'lr': args.non_sign_radius,
     }, {
         'params': hidden,
         'norm': 'Auto', # Picks layerwise norm based on the parameter shape
-        'scale': args.non_sign_radius,
+        'lr': args.non_sign_radius,
     }, {
         'params': output,
         'norm': 'Sign',
         'norm_kwargs': {'zero_init': True},
-        'scale': args.sign_radius,
+        'lr': args.sign_radius,
     }]
 
-    optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, unconstrained=not args.constrained)
+    optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=args.weight_decay, corrected=args.corrected)
     optimizer.init()
 
     # Data loading code

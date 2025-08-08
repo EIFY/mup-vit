@@ -250,7 +250,6 @@ class Scion(torch.optim.Optimizer):
         norm (str, optional): Choice of norm for gradient projection ('Auto', 'SpectralConv', 
             'ColNorm', 'RowNorm', 'BiasRMS', 'Spectral', or 'Sign') (default: 'Auto')
         norm_kwargs (dict, optional): Additional arguments for the norm projection (default: None)
-        scale (float, optional): Scale factor for updates (default: 1.0)
         unconstrained (bool, optional): Whether to use unconstrained updates (default: False)
     
     Example:
@@ -259,31 +258,33 @@ class Scion(torch.optim.Optimizer):
         ...     'params': model.transformer.h.parameters(),
         ...     'norm': 'Spectral',
         ...     'norm_kwargs': {},
-        ...     'scale': radius,
+        ...     'lr': radius,
         ... }, {
         ...     'params': model.lm_head.parameters(),
         ...     'norm': 'Sign',
         ...     'norm_kwargs': {},
-        ...     'scale': radius*60.0,
+        ...     'lr': radius*60.0,
         ... }]
         >>> optimizer = Scion(optim_groups, lr=2**-12, momentum=0.1)
     """
-    def __init__(self, params, lr=1e-3, momentum=1.0, norm: str='Auto', norm_kwargs: dict=None, scale=1.0, unconstrained=False):
+    def __init__(self, params, lr=1e-3, momentum=1.0, weight_decay=0.01, norm: str='Auto', norm_kwargs: dict=None, corrected=False):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if momentum < 0.0:
             raise ValueError(f"Invalid momentum value: {momentum}")
         if norm_kwargs is None:
             norm_kwargs = {}
-        defaults = dict(lr=lr, momentum=momentum, scale=scale, unconstrained=unconstrained, norm=norm, norm_kwargs=norm_kwargs)
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, norm=norm, norm_kwargs=norm_kwargs, corrected=corrected)
         super().__init__(params, defaults)
+        for group in self.param_groups:
+            group['max_lr'] = group['lr']
 
     def step(self):
         for group in self.param_groups:
             lr = group['lr']
             momentum = group['momentum']
-            scale = group['scale']
-            unconstrained = group['unconstrained']
+            wd = lr * group['weight_decay']
+            corrected = group['corrected']
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
             for p in group['params']:
                 g = p.grad
@@ -298,9 +299,10 @@ class Scion(torch.optim.Optimizer):
                     buf.mul_(1-momentum).add_(g, alpha=momentum)
                     g = buf
 
-                update = scale * norm_backend.lmo(g)
-                if not unconstrained:
-                    p.data.mul_(1-lr)
+                update = norm_backend.lmo(g)
+                if corrected:
+                    wd *= lr / group['max_lr']
+                p.data.mul_(1-wd)
                 p.data.add_(update, alpha=-lr)
 
     def init(self):
