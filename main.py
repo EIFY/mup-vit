@@ -81,14 +81,12 @@ parser.add_argument('--schedule-free', action='store_true',
                     help='Use schedule-free AdamW optimizer (https://arxiv.org/abs/2405.15682).')
 parser.add_argument("--warmup", default=10000, type=int,
                     help="Number of steps to warmup for.")
-parser.add_argument('--lr', '--learning-rate', default=0.006, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--sign-lr', default=0.2, type=float,
+                    help='maximum learning rate for the output layer')
 parser.add_argument('--corrected', action='store_true', default=False,
                     help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
-parser.add_argument('--non-sign-radius', default=1., type=float,
-                    help='Radius for patchifier and hidden layers')
-parser.add_argument('--sign-radius', default=20., type=float,
-                    help='Radius for the output layer')
 parser.add_argument('--beta1', default=0.9, type=float,
                     help='beta1 for AdamW')
 parser.add_argument('--beta2', default=0.999, type=float,
@@ -291,9 +289,6 @@ def main_worker(gpu, args):
         device = torch.device("mps")
         model = model.to(device)
 
-    if args.decoupled_weight_decay:
-        args.weight_decay /= args.lr
-
     patchifier = []
     hidden = []
     output = []
@@ -306,22 +301,26 @@ def main_worker(gpu, args):
         else:
             hidden.append(p)
 
+    wd = sign_wd = args.weight_decay
+    if args.decoupled_weight_decay:
+        wd /= args.lr
+        sign_wd /= args.sign_lr
+
     optim_groups = [{
         'params': patchifier,
         'norm': 'SpectralPatchifier',
-        'lr': args.non_sign_radius,
     }, {
         'params': hidden,
         'norm': 'Auto', # Picks layerwise norm based on the parameter shape
-        'lr': args.non_sign_radius,
     }, {
         'params': output,
         'norm': 'Sign',
         'norm_kwargs': {'zero_init': True},
-        'lr': args.sign_radius,
+        'lr': args.sign_lr,
+        'weight_decay': sign_wd,
     }]
 
-    optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=args.weight_decay, corrected=args.corrected)
+    optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, corrected=args.corrected)
     optimizer.init()
 
     # Data loading code
