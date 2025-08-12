@@ -320,8 +320,13 @@ def main_worker(gpu, args):
         'weight_decay': sign_wd,
     }]
 
-    optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, corrected=args.corrected)
+    optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd)
     optimizer.init()
+
+    max_learning_rate = max_weight_decay = None
+    if args.corrected:
+        max_learning_rate = [group['lr'] for group in optimizer.param_groups]
+        max_weight_decay = [group['weight_decay'] for group in optimizer.param_groups]
 
     # Data loading code
     if args.fake_data:
@@ -475,7 +480,7 @@ def main_worker(gpu, args):
         validate(val_loader, model, args.start_step, device, args)
         return
 
-    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
+    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, max_learning_rate, max_weight_decay, device, args)
 
 
 def infinite_loader(loader, sampler):
@@ -487,7 +492,7 @@ def infinite_loader(loader, sampler):
         epoch += 1
 
 
-def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, optimizer, scheduler, device, args):
+def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, optimizer, scheduler, max_learning_rate, max_weight_decay, device, args):
     batch_time = AverageMeter('Time', device, ':6.3f')
     data_time = AverageMeter('Data', device, ':6.3f')
     losses = AverageMeter('Loss', device, ':.4e')
@@ -581,6 +586,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         if scheduler:
             scheduler.step()
+            if args.corrected:
+                for group, max_lr, max_wd in zip(optimizer.param_groups, max_learning_rate, max_weight_decay):
+                    group['weight_decay'] = max_wd * group['lr'] / max_lr
 
 
 def validate(val_loader, model, step, device, args):
