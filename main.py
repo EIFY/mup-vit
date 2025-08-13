@@ -26,6 +26,7 @@ import torchvision.models as models
 from torchvision.transforms import v2
 from torch.utils.data import Subset
 
+import schedulefree
 from talon import Scion
 import wandb
 
@@ -77,6 +78,8 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
+parser.add_argument('--optimizer', default='Scion', type=str,
+                    choices=['Scion', 'AdamW'])
 parser.add_argument('--schedule-free', action='store_true',
                     help='Use schedule-free AdamW optimizer (https://arxiv.org/abs/2405.15682).')
 parser.add_argument("--warmup", default=10000, type=int,
@@ -289,39 +292,80 @@ def main_worker(gpu, args):
         device = torch.device("mps")
         model = model.to(device)
 
-    patchifier = []
-    hidden = []
-    output = []
-
-    for n, p in model.named_parameters():
-        if n == "conv_proj.weight":
-            patchifier.append(p)
-        elif n == "heads.head.weight":
-            output.append(p)
-        else:
-            hidden.append(p)
-
     wd = sign_wd = args.weight_decay
     if args.decoupled_weight_decay:
         wd /= args.lr
         sign_wd /= args.sign_lr
 
-    optim_groups = [{
-        'params': patchifier,
-        'norm': 'SpectralPatchifier',
-    }, {
-        'params': hidden,
-        'norm': 'Auto', # Picks layerwise norm based on the parameter shape
-    }, {
-        'params': output,
-        'norm': 'Sign',
-        'norm_kwargs': {'zero_init': True},
-        'lr': args.sign_lr,
-        'weight_decay': sign_wd,
-    }]
+    if args.optimizer == 'Scion':
 
-    optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd)
-    optimizer.init()
+        patchifier = []
+        hidden = []
+        output = []
+
+        for n, p in model.named_parameters():
+            if n == "conv_proj.weight":
+                patchifier.append(p)
+            elif n == "heads.head.weight":
+                output.append(p)
+            else:
+                hidden.append(p)
+
+        optim_groups = [{
+            'params': patchifier,
+            'norm': 'SpectralPatchifier',
+        }, {
+            'params': hidden,
+            'norm': 'Auto', # Picks layerwise norm based on the parameter shape
+        }, {
+            'params': output,
+            'norm': 'Sign',
+            'norm_kwargs': {'zero_init': True},
+            'lr': args.sign_lr,
+            'weight_decay': sign_wd,
+        }]
+
+        optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd)
+        optimizer.init()
+
+    elif args.optimizer == 'AdamW':
+
+        output = []
+        wd_params = []
+        non_wd_params = []
+
+        for n, p in model.named_parameters():
+            if n == "heads.head.weight":
+                output.append(p)
+            elif weight_decay_param(n, p) and p.requires_grad:
+                wd_params.append(p)
+            elif not weight_decay_param(n, p) and p.requires_grad:
+                non_wd_params.append(p)
+
+        params = [
+            {"params": output, 'lr': args.sign_lr, "weight_decay": sign_wd},
+            {"params": wd_params},
+            {"params": non_wd_params, "weight_decay": 0.},
+        ]
+
+        default = dict(
+            lr=args.lr,
+            betas=(args.beta1, args.beta2),
+            weight_decay=wd,
+        )
+
+        if args.schedule_free:
+            optimizer = schedulefree.AdamWScheduleFree(
+                params,
+                warmup_steps=args.warmup,
+                r=args.polynomial_weighting_power,
+                **default
+            )
+            optimizer.train()
+        else:
+            optimizer = torch.optim.AdamW(params, **default)
+    else:
+        raise ValueError('unsupported optimizer type %r' % args.optimizer)
 
     max_learning_rate = max_weight_decay = None
     if args.corrected:
