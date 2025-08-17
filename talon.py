@@ -379,6 +379,7 @@ class Scion(torch.optim.Optimizer):
         defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, norm=norm, norm_kwargs=norm_kwargs, local_decay=local_decay, repeat=repeat)
         super().__init__(params, defaults)
 
+    @torch.no_grad()
     def step(self):
         for group in self.param_groups:
             lr = group['lr']
