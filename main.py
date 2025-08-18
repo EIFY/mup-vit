@@ -303,7 +303,8 @@ def main_worker(gpu, args):
     if args.optimizer == 'Scion':
 
         patchifier = []
-        hidden = []
+        linear = []
+        bias = []
         output = []
 
         for n, p in model.named_parameters():
@@ -311,15 +312,20 @@ def main_worker(gpu, args):
                 patchifier.append(p)
             elif n == "heads.head.weight":
                 output.append(p)
+            elif p.ndim >= 2:
+                linear.append(p)
             else:
-                hidden.append(p)
+                bias.append(p)
 
         optim_groups = [{
             'params': patchifier,
             'norm': 'SpectralPatchifier',
         }, {
-            'params': hidden,
-            'norm': 'Auto', # Picks layerwise norm based on the parameter shape
+            'params': linear,
+            'norm': 'Spectral',
+        }, {
+            'params': bias,
+            'norm': 'BiasRMS',
         }, {
             'params': output,
             'norm': 'Sign',
@@ -590,9 +596,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             progress.display(step)
             if args.wandb and is_primary(args):
 
+                layer_norms = {}
                 with torch.no_grad():
                     l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
-
+                    if args.optimizer == 'Scion' and args.local_decay:
+                        layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
                 samples_per_second_per_gpu = args.batch_size / batch_time.val
                 samples_per_second = samples_per_second_per_gpu * args.world_size
                 log_data = {
@@ -603,7 +611,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     "samples_per_second_per_gpu": samples_per_second_per_gpu,
                     "l2_grads": l2_grads.item(),
                     "l2_params": math.sqrt(l2_params)
-                }
+                } | layer_norms
                 if scheduler:
                     log_data["lr"] = scheduler.get_last_lr()[0]
                 wandb.log(log_data, step=step)

@@ -404,6 +404,21 @@ class Scion(torch.optim.Optimizer):
                     p.data.mul_(1-wd)
                 p.data.add_(update, alpha=-lr)
 
+    def report_norms(self):
+        spectral = []
+        bias = []
+        sign = []
+        for group in self.param_groups:
+            for p in group['params']:
+                norm = self.state[p]['norm']
+                if group['norm'].startswith('Spectral'):
+                    spectral.extend(norm[0].flatten().tolist())
+                elif group['norm'] == 'BiasRMS':
+                    bias.append(norm.item())
+                else:
+                    sign.append(norm.item())
+        return math.prod(spectral) ** (1 / len(spectral)), sum(bias) / len(bias), sum(sign) / len(sign)
+
     def init(self):
         for group in self.param_groups:
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
