@@ -287,11 +287,11 @@ class Sign(Norm):
     def local_decay(self, w, norm, wd, repeat=1):
         d_out, d_in = w.shape
         for _ in range(repeat):
-            flat_index = torch.argmax(w)
+            flat_index = torch.argmax(w.abs())
             row = flat_index // d_in
             col = flat_index % d_in
             w.data[row,col].mul_(1-wd)
-        norm = torch.max(w)
+        norm = torch.max(w.abs())
         if self.normalized:
             norm *= d_in
         return norm
