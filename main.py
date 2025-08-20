@@ -329,7 +329,7 @@ def main_worker(gpu, args):
         }, {
             'params': output,
             'norm': 'Sign',
-            'norm_kwargs': {'zero_init': True},
+            'norm_kwargs': {'zero_init': args.optimizer == 'Scion'},
             'lr': args.sign_lr,
             'weight_decay': sign_wd,
         }]
