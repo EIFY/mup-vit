@@ -462,7 +462,8 @@ class Talon(torch.optim.Optimizer):
                     else:
                         norm_param_diff = norm_backend.norm(p.data - state['prev_param'])
                     norm_grad_diff = norm_backend.dual_norm(p.grad - state['prev_grad'])
-                    state['smoothness'].mul_(beta).add_(norm_grad_diff / (norm_param_diff + eps), alpha=1-beta)
+                    nonzero = torch.minimum(norm_grad_diff, norm_param_diff) > eps
+                    state['smoothness'][nonzero] = beta * state['smoothness'][nonzero] + (1-beta) * (norm_grad_diff / norm_param_diff)[nonzero]
 
                 update = norm_backend.lmo(g)
 
