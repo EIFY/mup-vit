@@ -55,7 +55,7 @@ class ColNorm(Norm):
             w.data = w.data.transpose(0, 1)
         return norm
 
-    def init(self, w):
+    def init(self, w, init_dtype=torch.float64):
         dtype = w.data.dtype
         if self.transpose:
             w.data = w.data.transpose(0, 1)
@@ -108,7 +108,7 @@ class RowNorm(Norm):
             w.data = w.data.transpose(0, 1)
         return norm
 
-    def init(self, w):
+    def init(self, w, init_dtype=torch.float64):
         dtype = w.data.dtype
         if self.transpose:
             w.data = w.data.transpose(0, 1)
@@ -140,7 +140,7 @@ class BiasRMS(Norm):
         rms_values = torch.sqrt(torch.mean(w ** 2))
         return rms_values
 
-    def init(self, g):
+    def init(self, g, init_dtype=torch.float64):
         torch.nn.init.zeros_(g)
         return torch.tensor(0.).to(g)
 
@@ -188,8 +188,8 @@ class SpectralConv(Norm):
         s[row,col].mul_(1 - wd)
         return k**2 * (d_in / d_out)**0.5 * torch.max(s), v
 
-    def init(self, w):
-        w_fp = w.data.double()
+    def init(self, w, init_dtype=torch.float64):
+        w_fp = w.data.to(init_dtype)
         k = w.data.size(2)
         for kx in range(k):
             for ky in range(k):
@@ -247,8 +247,8 @@ class SpectralPatchifier(Norm):
         d_out, d_in = w.size(-2), w.size(-1)
         return (1 - wd) * (d_in / d_out)**0.5 * s, v
     
-    def init(self, w):
-        w_fp = w.data.double()
+    def init(self, w, init_dtype=torch.float64):
+        w_fp = w.data.to(init_dtype)
         torch.nn.init.orthogonal_(w_fp)
         d_out, *rest = w_fp.shape
         d_in = math.prod(rest)
@@ -305,8 +305,8 @@ class Spectral(Norm):
         scale = self.scale(*w.shape[-2:])
         return (1 - wd) * s / scale, v
 
-    def init(self, w):
-        w_fp = w.data.double()
+    def init(self, w, init_dtype=torch.float64):
+        w_fp = w.data.to(init_dtype)
         l = [range(s) for s in w_fp.shape[:-2]]
         l.append([...])
         for index in itertools.product(*l):
@@ -355,7 +355,7 @@ class Sign(Norm):
             norm *= d_in
         return norm
 
-    def init(self, w):
+    def init(self, w, init_dtype=torch.float64):
         d_out, d_in = w.shape
         if self.zero_init:
             torch.nn.init.zeros_(w)
@@ -495,11 +495,12 @@ class Talon(torch.optim.Optimizer):
         return math.prod(spectral) ** (1 / len(spectral)), sum(bias) / len(bias), sum(sign) / len(sign)
 
     def init(self):
+        init_dtype = torch.float32 if torch.backends.mps.is_available() else torch.float64
         for group in self.param_groups:
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
             init_func = norm_backend.init
             for p in group['params']:
-                self.state[p]['norm'] = init_func(p)
+                self.state[p]['norm'] = init_func(p, init_dtype=init_dtype)
                 if type(self.state[p]['norm']) is tuple:
                     norm, v = self.state[p]['norm']
                     self.state[p]['singular'] = v.clone()
@@ -591,11 +592,12 @@ class Scion(torch.optim.Optimizer):
         return math.prod(spectral) ** (1 / len(spectral)), sum(bias) / len(bias), sum(sign) / len(sign)
 
     def init(self):
+        init_dtype = torch.float32 if torch.backends.mps.is_available() else torch.float64
         for group in self.param_groups:
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
             init_func = norm_backend.init
             for p in group['params']:
-                self.state[p]['norm'] = init_func(p)
+                self.state[p]['norm'] = init_func(p, init_dtype=init_dtype)
                 if group['momentum'] != 1:
                     self.state[p]['momentum_buffer'] = torch.zeros_like(p)
 
@@ -688,7 +690,6 @@ coeffs_list = [
 # safety factor for numerical stability (but exclude last polynomial)
 coeffs_list = [(a / 1.01, b / 1.01**3, c / 1.01**5) for (a, b, c) in coeffs_list[:-1]] + [coeffs_list[-1]]
 
-@torch.compile
 def PolarExpress(G: torch.Tensor, steps: int) -> torch.Tensor:
     assert G.ndim >= 2
     X = G.bfloat16() # for speed
@@ -701,6 +702,9 @@ def PolarExpress(G: torch.Tensor, steps: int) -> torch.Tensor:
         X = a * X + B @ X  # X <- aX + bX ˆ3 + cX ˆ5
     if G.size(-2) > G.size(-1): X = X.mT
     return X
+
+if not torch.backends.mps.is_available():
+    PolarExpress = torch.compile(PolarExpress)
 
 
 def zeroth_power_via_svd(G):
