@@ -27,7 +27,7 @@ from torchvision.transforms import v2
 from torch.utils.data import Subset
 
 import schedulefree
-from talon import Scion
+from talon import Scion, Talon
 import wandb
 
 from simple_vit import SimpleVisionTransformer
@@ -79,7 +79,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
 parser.add_argument('--optimizer', default='Scion', type=str,
-                    choices=['Scion', 'AdamW'])
+                    choices=['Scion', 'AdamW', 'Talon'])
 parser.add_argument('--schedule-free', action='store_true',
                     help='Use schedule-free AdamW optimizer (https://arxiv.org/abs/2405.15682).')
 parser.add_argument("--warmup", default=10000, type=int,
@@ -300,7 +300,7 @@ def main_worker(gpu, args):
         wd /= args.lr
         sign_wd /= args.sign_lr
 
-    if args.optimizer == 'Scion':
+    if args.optimizer in ('Scion', 'Talon'):
 
         patchifier = []
         linear = []
@@ -334,7 +334,10 @@ def main_worker(gpu, args):
             'weight_decay': sign_wd,
         }]
 
-        optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, local_decay=args.local_decay, repeat=args.repeat)
+        if args.optimizer == 'Scion':
+            optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, local_decay=args.local_decay, repeat=args.repeat)
+        else:
+            optimizer = Talon(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, beta=args.beta2, local_decay=args.local_decay, repeat=args.repeat)
         optimizer.init()
 
     elif args.optimizer == 'AdamW':

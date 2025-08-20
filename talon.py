@@ -124,14 +124,20 @@ class RowNorm(Norm):
 
 class BiasRMS(Norm):
     def lmo(self, g):
-        rms_values = torch.sqrt(torch.mean(g ** 2, dim=0, keepdim=True))
+        rms_values = torch.sqrt(torch.mean(g ** 2))
         g = g / (rms_values + eps)
         return g
+
+    def dual_norm(self, g):
+        return math.sqrt(g.size(0)) * torch.linalg.vector_norm(g)
+
+    def norm(self, w, repeat=1):
+        return torch.sqrt(torch.mean(w ** 2))
 
     def local_decay(self, w, norm, wd, repeat=1):
         # Same as regular weight decay
         w.data.mul_(1-wd)
-        rms_values = torch.sqrt(torch.mean(w ** 2, dim=0, keepdim=True))
+        rms_values = torch.sqrt(torch.mean(w ** 2))
         return rms_values
 
     def init(self, g):
@@ -148,6 +154,20 @@ class SpectralConv(Norm):
         d_out, d_in, k, _ = g.shape
         g *= (d_out / d_in)**0.5 / (k ** 2)
         return g
+
+    def dual_norm(self, g):
+        return torch.sum(self.lmo(g) * g)
+
+    def norm(self, w, v, repeat=1):
+        d_out, d_in, _, k = w.shape
+        w = w.permute(2, 3, 0, 1)
+        for _ in range(repeat):
+            u = w @ v
+            u /= torch.linalg.vector_norm(u, dim=-2, keepdim=True)
+            v = w.mT @ u
+            s = torch.linalg.vector_norm(v, dim=-2, keepdim=True)
+            v /= s
+        return k**2 * (d_in / d_out)**0.5 * torch.max(s), v
 
     def local_decay(self, w, norm, wd, repeat=1):
         d_out, d_in, _, k = w.shape
@@ -198,6 +218,22 @@ class SpectralPatchifier(Norm):
         g *= (d_out / d_in)**0.5
         return g.view(original_shape)
 
+    def dual_norm(self, g):
+        return torch.sum(self.lmo(g) * g)
+
+    def norm(self, w, v, repeat=1):
+        # Same as self.local_decay(w, norm, wd=0, repeat=repeat)
+        # But it doesn't seem that torch can exploit wd=0.
+        w = w.reshape(len(w), -1)
+        for _ in range(repeat):
+            u = w @ v
+            u /= torch.linalg.vector_norm(u)
+            v = w.mT @ u
+            s = torch.linalg.vector_norm(v)
+            v /= s
+        d_out, d_in = w.size(-2), w.size(-1)
+        return (d_in / d_out)**0.5 * s, v
+
     def local_decay(self, w, norm, wd, repeat=1):
         w = w.reshape(len(w), -1)
         _, v = norm
@@ -244,13 +280,26 @@ class Spectral(Norm):
         g *= self.scale(*g.shape[-2:])
         return g
 
+    def dual_norm(self, g):
+        return torch.sum(self.lmo(g) * g, dim=(-2, -1), keepdim=True)
+
+    def norm(self, w, v, repeat=1):
+        for _ in range(repeat):
+            u = w @ v
+            u /= torch.linalg.vector_norm(u, dim=-2, keepdim=True)
+            v = w.mT @ u
+            s = torch.linalg.vector_norm(v, dim=-2, keepdim=True)
+            v /= s
+        scale = self.scale(*w.shape[-2:])
+        return s / scale, v
+
     def local_decay(self, w, norm, wd, repeat=1):
         _, v = norm
         for _ in range(repeat):
             u = w @ v
             u /= torch.linalg.vector_norm(u, dim=-2, keepdim=True)
             v = w.mT @ u
-            w.data.add_(u @ v.mT, alpha=-wd)
+            w.data.add_(-wd * u @ v.mT)
             s = torch.linalg.vector_norm(v, dim=-2, keepdim=True)
             v /= s
         scale = self.scale(*w.shape[-2:])
@@ -283,6 +332,16 @@ class Sign(Norm):
             return torch.sign(g) / d_in
         else:
             return torch.sign(g)
+
+    def dual_norm(self, g):
+        return torch.sum(g.abs())
+
+    def norm(self, w, repeat=1):
+        d_out, d_in = w.shape
+        norm = torch.max(w.abs())
+        if self.normalized:
+            norm *= d_in
+        return norm
 
     def local_decay(self, w, norm, wd, repeat=1):
         d_out, d_in = w.shape
@@ -338,6 +397,117 @@ norm_dict = {
     'Sign': Sign,
     'Auto': Auto,
 }
+
+
+class Talon(torch.optim.Optimizer):
+    """Talon optimizer implementation.
+
+    Args:
+        params: Iterable of parameters to optimize or dicts defining parameter groups
+        lr (float, optional): Learning rate (default: 1e-3)
+        momentum (float, optional): One minus the traditional momentum factor. For example,
+            a traditional momentum of 0.9 would be specified as momentum=0.1 here (default: 1.0)
+        weight_decay (float, optional): Weight decay coefficient to be muliplied by the LR. WD * LR
+            corresponds to the "learning rate" of the original constrained Scion.
+        norm (str, optional): Choice of norm for gradient projection ('Auto', 'SpectralConv',
+            'ColNorm', 'RowNorm', 'BiasRMS', 'Spectral', or 'Sign') (default: 'Auto')
+        norm_kwargs (dict, optional): Additional arguments for the norm projection (default: None)
+
+    Example:
+        >>> radius = 50.0
+        >>> optim_groups = [{
+        ...     'params': model.transformer.h.parameters(),
+        ...     'norm': 'Spectral',
+        ...     'norm_kwargs': {},
+        ...     'lr': radius,
+        ... }, {
+        ...     'params': model.lm_head.parameters(),
+        ...     'norm': 'Sign',
+        ...     'norm_kwargs': {},
+        ...     'lr': radius*60.0,
+        ... }]
+        >>> optimizer = Talon(optim_groups, lr=2**-12, momentum=0.1)
+    """
+    def __init__(self, params, lr=1e-3, momentum=1.0, weight_decay=0.01, beta=0.999, norm: str='Auto', norm_kwargs: dict=None, local_decay=False, repeat=1):
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if momentum < 0.0:
+            raise ValueError(f"Invalid momentum value: {momentum}")
+        if norm_kwargs is None:
+            norm_kwargs = {}
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, beta=beta, norm=norm, norm_kwargs=norm_kwargs, local_decay=local_decay, repeat=repeat)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            lr = group['lr']
+            momentum = group['momentum']
+            beta = group['beta']
+            norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
+            for p in group['params']:
+                g = p.grad
+                if g is None:
+                    continue
+                state = self.state[p]
+
+                if momentum != 1:
+                    buf = state['momentum_buffer']
+                    buf.mul_(1-momentum).add_(g, alpha=momentum)
+                    g = buf
+
+                if 'prev_param' in state:
+                    if 'singular' in state:
+                        norm_param_diff, state['singular'] = norm_backend.norm(p.data - state['prev_param'], state['singular'], repeat=5)
+                    else:
+                        norm_param_diff = norm_backend.norm(p.data - state['prev_param'])
+                    norm_grad_diff = norm_backend.dual_norm(p.grad - state['prev_grad'])
+                    state['smoothness'].mul_(beta).add_(norm_grad_diff / (norm_param_diff + eps), alpha=1-beta)
+
+                update = norm_backend.lmo(g)
+
+                adaptive_lr = lr / state['smoothness']
+                wd = adaptive_lr * group['weight_decay']
+
+                state['prev_param'] = p.data.clone()
+                state['prev_grad'] = p.grad
+
+                if group['local_decay']:
+                    state['norm'] = norm_backend.local_decay(p, state['norm'], wd, repeat=group['repeat'])
+                else:
+                    p.data.mul_(1-wd)
+                p.data.add_(-adaptive_lr * update)
+
+    def report_norms(self):
+        spectral = []
+        bias = []
+        sign = []
+        for group in self.param_groups:
+            for p in group['params']:
+                norm = self.state[p]['norm']
+                if group['norm'].startswith('Spectral'):
+                    spectral.extend(norm[0].flatten().tolist())
+                elif group['norm'] == 'BiasRMS':
+                    bias.append(norm.item())
+                else:
+                    sign.append(norm.item())
+        return math.prod(spectral) ** (1 / len(spectral)), sum(bias) / len(bias), sum(sign) / len(sign)
+
+    def init(self):
+        for group in self.param_groups:
+            norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
+            init_func = norm_backend.init
+            for p in group['params']:
+                self.state[p]['norm'] = init_func(p)
+                if type(self.state[p]['norm']) is tuple:
+                    norm, v = self.state[p]['norm']
+                    self.state[p]['singular'] = v.clone()
+                    self.state[p]['smoothness'] = torch.ones_like(norm) / group['lr']
+                else:
+                    self.state[p]['smoothness'] = torch.ones_like(self.state[p]['norm']) / group['lr']
+                if group['momentum'] != 1:
+                    self.state[p]['momentum_buffer'] = torch.zeros_like(p)
+            group['lr'] = 1.0
 
 
 class Scion(torch.optim.Optimizer):
