@@ -6,6 +6,7 @@ import math
 import os
 import random
 import shutil
+import statistics
 import time
 import warnings
 from datetime import datetime
@@ -169,6 +170,10 @@ def chunk(n, device, *tensors):
         yield tensors
     else:
         yield from zip(*(t.chunk(n) for t in tensors))
+
+
+def grad_stdev(model):
+    return statistics.pstdev(g for p in model.parameters() if p.grad is not None for g in p.grad.flatten().tolist())
 
 
 def main():
@@ -589,7 +594,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         # do SGD step
         l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
         optimizer.step()
-        optimizer.zero_grad()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -641,6 +645,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 if scheduler:
                     ckpt['scheduler'] = scheduler.state_dict()
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
+
+        optimizer.zero_grad()
 
         if scheduler:
             scheduler.step()
@@ -708,6 +714,7 @@ def validate(val_loader, model, step, device, args):
             'val/loss': losses.avg,
             'val/acc@1': top1.avg,
             'val/acc@5': top5.avg,
+            'stdev_grads': grad_stdev(model)
         }
         wandb.log(log_data, step=step)
 
