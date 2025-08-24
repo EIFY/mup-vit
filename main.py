@@ -91,6 +91,8 @@ parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--corrected', action='store_true', default=False,
                     help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
+parser.add_argument('--head-corrected', action='store_true', default=False,
+                    help='Use AdamC-style corrected weight decay for the output head')
 parser.add_argument('--beta1', default=0.9, type=float,
                     help='beta1 for AdamW')
 parser.add_argument('--beta2', default=0.999, type=float,
@@ -325,18 +327,22 @@ def main_worker(gpu, args):
         optim_groups = [{
             'params': patchifier,
             'norm': 'SpectralPatchifier',
+            'corrected': args.corrected,
         }, {
             'params': linear,
             'norm': 'Spectral',
+            'corrected': args.corrected,
         }, {
             'params': bias,
             'norm': 'BiasRMS',
+            'corrected': args.corrected,
         }, {
             'params': output,
             'norm': 'Sign',
             'norm_kwargs': {'zero_init': args.optimizer == 'Scion'},
             'lr': args.sign_lr,
             'weight_decay': sign_wd,
+            'corrected': args.head_corrected,
         }]
 
         if args.optimizer == 'Scion':
@@ -360,9 +366,9 @@ def main_worker(gpu, args):
                 non_wd_params.append(p)
 
         params = [
-            {"params": output, 'lr': args.sign_lr, "weight_decay": sign_wd},
-            {"params": wd_params},
-            {"params": non_wd_params, "weight_decay": 0.},
+            {"params": output, 'lr': args.sign_lr, "weight_decay": sign_wd, 'corrected': args.head_corrected},
+            {"params": wd_params, 'corrected': args.corrected},
+            {"params": non_wd_params, "weight_decay": 0., 'corrected': False},
         ]
 
         default = dict(
@@ -650,8 +656,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         if scheduler:
             scheduler.step()
-            if args.corrected:
-                for group, max_lr, max_wd in zip(optimizer.param_groups, max_learning_rate, max_weight_decay):
+            for group, max_lr, max_wd in zip(optimizer.param_groups, max_learning_rate, max_weight_decay):
+                if group['corrected']:
                     group['weight_decay'] = max_wd * group['lr'] / max_lr
 
 
