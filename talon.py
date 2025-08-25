@@ -479,6 +479,7 @@ class Talon(torch.optim.Optimizer):
                     state['norm'] = norm_backend.local_decay(p, state['norm'], wd, repeat=group['repeat'])
                 else:
                     p.data.mul_(1-wd)
+                    state['norm'] = norm_backend.local_decay(p, state['norm'], 0., repeat=1)
                 p.data.add_(-adaptive_lr * update)
 
     def report_norms(self):
@@ -579,6 +580,7 @@ class Scion(torch.optim.Optimizer):
                     state['norm'] = norm_backend.local_decay(p, state['norm'], wd, repeat=group['repeat'])
                 else:
                     p.data.mul_(1-wd)
+                    state['norm'] = norm_backend.local_decay(p, state['norm'], 0., repeat=1)
                 p.data.add_(update, alpha=-lr)
 
     def report_norms(self):

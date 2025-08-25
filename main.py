@@ -617,7 +617,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 layer_norms = {}
                 with torch.no_grad():
                     l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
-                    if args.optimizer == 'Scion' and args.local_decay:
+                    if args.optimizer in ('Scion', 'Talon'):
                         layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
                 samples_per_second_per_gpu = args.batch_size / batch_time.val
                 samples_per_second = samples_per_second_per_gpu * args.world_size
