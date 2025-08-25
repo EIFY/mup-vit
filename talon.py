@@ -469,6 +469,8 @@ class Talon(torch.optim.Optimizer):
 
                 adaptive_lr = lr / state['smoothness']
                 wd = adaptive_lr * group['weight_decay']
+                if group['corrected']:
+                    wd *= adaptive_lr
 
                 state['prev_param'] = p.data.clone()
                 state['prev_grad'] = p.grad
@@ -499,6 +501,9 @@ class Talon(torch.optim.Optimizer):
         for group in self.param_groups:
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
             init_func = norm_backend.init
+            initial_lr = group['lr'] * group['lr_multiplier']
+            if group['corrected']:
+                group['weight_decay'] /= initial_lr
             for p in group['params']:
                 self.state[p]['norm'] = init_func(p, init_dtype=init_dtype)
                 if type(self.state[p]['norm']) is tuple:

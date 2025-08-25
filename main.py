@@ -309,8 +309,8 @@ def main_worker(gpu, args):
 
     wd = sign_wd = args.weight_decay
     if args.decoupled_weight_decay:
-        wd /= args.lr
-        sign_wd /= args.sign_lr
+        wd /= args.lr * args.lr_multiplier
+        sign_wd /= args.sign_lr * args.lr_multiplier
 
     if args.optimizer in ('Scion', 'Talon'):
 
@@ -395,8 +395,8 @@ def main_worker(gpu, args):
     else:
         raise ValueError('unsupported optimizer type %r' % args.optimizer)
 
-    max_learning_rate = max_weight_decay = None
-    if args.corrected:
+    max_learning_rate = max_weight_decay = []
+    if (args.corrected or args.head_corrected) and args.optimizer != 'Talon':
         max_learning_rate = [group['lr'] for group in optimizer.param_groups]
         max_weight_decay = [group['weight_decay'] for group in optimizer.param_groups]
 
