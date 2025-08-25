@@ -428,14 +428,14 @@ class Talon(torch.optim.Optimizer):
         ... }]
         >>> optimizer = Talon(optim_groups, lr=2**-12, momentum=0.1)
     """
-    def __init__(self, params, lr=1e-3, momentum=1.0, weight_decay=0.01, beta=0.999, norm: str='Auto', norm_kwargs: dict=None, local_decay=False, repeat=1):
+    def __init__(self, params, lr=1e-3, momentum=1.0, weight_decay=0.01, beta=0.999, norm: str='Auto', norm_kwargs: dict=None, local_decay=False, repeat=1, lr_multiplier=1.0):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if momentum < 0.0:
             raise ValueError(f"Invalid momentum value: {momentum}")
         if norm_kwargs is None:
             norm_kwargs = {}
-        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, beta=beta, norm=norm, norm_kwargs=norm_kwargs, local_decay=local_decay, repeat=repeat)
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, beta=beta, norm=norm, norm_kwargs=norm_kwargs, local_decay=local_decay, repeat=repeat, lr_multiplier=lr_multiplier)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -509,7 +509,7 @@ class Talon(torch.optim.Optimizer):
                     self.state[p]['smoothness'] = torch.ones_like(self.state[p]['norm']) / group['lr']
                 if group['momentum'] != 1:
                     self.state[p]['momentum_buffer'] = torch.zeros_like(p)
-            group['lr'] = 1.0
+            group['lr'] = group.pop('lr_multiplier')
 
 
 class Scion(torch.optim.Optimizer):

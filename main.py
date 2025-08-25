@@ -81,6 +81,11 @@ parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
 parser.add_argument('--optimizer', default='Scion', type=str,
                     choices=['Scion', 'AdamW', 'Talon'])
+parser.add_argument('--schedule', default=True,
+                    action=argparse.BooleanOptionalAction,
+                    help='Whether to use LR scheduling when not running schedule-free AdamW')
+parser.add_argument('--lr-multiplier', default=1.0, type=float,
+                    help='LR multiplier for Talon')
 parser.add_argument('--schedule-free', action='store_true',
                     help='Use schedule-free AdamW optimizer (https://arxiv.org/abs/2405.15682).')
 parser.add_argument("--warmup", default=10000, type=int,
@@ -348,7 +353,7 @@ def main_worker(gpu, args):
         if args.optimizer == 'Scion':
             optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, local_decay=args.local_decay, repeat=args.repeat)
         else:
-            optimizer = Talon(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, beta=args.beta2, local_decay=args.local_decay, repeat=args.repeat)
+            optimizer = Talon(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, beta=args.beta2, local_decay=args.local_decay, repeat=args.repeat, lr_multiplier=args.lr_multiplier)
         optimizer.init()
 
     elif args.optimizer == 'AdamW':
@@ -493,7 +498,7 @@ def main_worker(gpu, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
         multiprocessing_context='spawn', prefetch_factor=1)
 
-    if args.schedule_free:
+    if args.schedule_free or not args.schedule:
         scheduler = None
     else:
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
