@@ -647,11 +647,16 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             best_acc1 = max(acc1, best_acc1)
 
             if is_primary(args):
+                opt_state_dict = optimizer.state_dict()
+                if args.optimizer == 'Talon':
+                    smoothness = {parameter_id: s['smoothness'] for parameter_id, s in opt_state_dict['state'].items()}
+                    torch.save(smoothness, os.path.join(args.checkpoint_path, str(step) + '_smoothness.pt'))
+
                 ckpt = {
                     'step': step,
                     'state_dict': original_model.state_dict(),
                     'best_acc1': best_acc1,
-                    'optimizer' : optimizer.state_dict(),
+                    'optimizer' : opt_state_dict,
                 }
                 if scheduler:
                     ckpt['scheduler'] = scheduler.state_dict()
