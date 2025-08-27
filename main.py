@@ -28,7 +28,7 @@ from torchvision.transforms import v2
 from torch.utils.data import Subset
 
 import schedulefree
-from talon import Scion, Talon
+import talon
 import wandb
 
 from simple_vit import SimpleVisionTransformer
@@ -350,10 +350,10 @@ def main_worker(gpu, args):
             'corrected': args.head_corrected,
         }]
 
-        if args.optimizer == 'Scion':
-            optimizer = Scion(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, local_decay=args.local_decay, repeat=args.repeat)
-        else:
-            optimizer = Talon(optim_groups, lr=args.lr, momentum=1-args.beta1, weight_decay=wd, beta=args.beta2, local_decay=args.local_decay, repeat=args.repeat, lr_multiplier=args.lr_multiplier)
+        defaults = dict(lr=args.lr, momentum=1-args.beta1, weight_decay=wd, local_decay=args.local_decay, repeat=args.repeat)
+        if args.optimizer == 'Talon':
+            defaults |= dict(beta=args.beta2, lr_multiplier=args.lr_multiplier)
+        optimizer = getattr(talon, args.optimizer)(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
         optimizer.init()
 
     elif args.optimizer == 'AdamW':
@@ -646,8 +646,10 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             is_best = acc1 > best_acc1
             best_acc1 = max(acc1, best_acc1)
 
-            if is_primary(args):
+            if is_primary(args) or args.optimizer in ('Scion', 'Talon'):
                 opt_state_dict = optimizer.state_dict()
+
+            if is_primary(args):
                 if args.optimizer == 'Talon':
                     smoothness = {parameter_id: s['smoothness'] for parameter_id, s in opt_state_dict['state'].items()}
                     torch.save(smoothness, os.path.join(args.checkpoint_path, str(step) + '_smoothness.pt'))
