@@ -543,7 +543,7 @@ class Scion(torch.optim.Optimizer):
             return
         index = 0
         buffer = []
-        assigned_tensor = torch.Tensor()
+        assigned_tensor = None
         for group in self.param_groups:
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
             shape_f = getattr(norm_backend, key + '_shape')
@@ -556,14 +556,39 @@ class Scion(torch.optim.Optimizer):
                 if self.rank == index % self.world_size:
                     assigned_tensor = tensor
                 if len(buffer) == self.world_size:
-                    dist.all_gather(buffer, tensor)
+                    dist.all_gather(buffer, assigned_tensor)
                     buffer.clear()
-                    assigned_tensor = torch.Tensor()
+                    assigned_tensor = None
                 index += 1
         if buffer:
             padding = self.world_size - len(buffer) % self.world_size
-            buffer.extend(torch.Tensor() for _ in range(padding))
+            buffer.extend(None for _ in range(padding))
+            if assigned_tensor is None:
+                buffer[self.rank] = assigned_tensor = p.new_empty((0,))
             dist.all_gather(buffer, assigned_tensor)
+
+    def sync_params(self):
+        if self.world_size == 1:
+            return
+        index = 0
+        buffer = []
+        assigned_p = None
+        for group in self.param_groups:
+            for p in group['params']:
+                buffer.append(p)
+                if self.rank == index % self.world_size:
+                    assigned_p = p
+                if len(buffer) == self.world_size:
+                    dist.all_gather(buffer, assigned_p)
+                    buffer.clear()
+                    assigned_p = None
+                index += 1
+        if buffer:
+            padding = self.world_size - len(buffer) % self.world_size
+            buffer.extend(None for _ in range(padding))
+            if assigned_p is None:
+                buffer[self.rank] = assigned_p = p.new_empty((0,))
+            dist.all_gather(buffer, assigned_p)
 
     @torch.no_grad()
     def step(self):
@@ -588,6 +613,7 @@ class Scion(torch.optim.Optimizer):
                 p.data.mul_(1-wd)
                 state['norm'], state['singular'] = norm_backend.local_decay(p, state['singular'], 0., repeat=1)
             p.data.add_(update, alpha=-lr)
+        self.sync_params()
 
     def report_norms(self):
         self.sync_state_for('norm')
@@ -686,6 +712,7 @@ class Talon(Scion):
                 p.data.mul_(1-wd)
                 state['norm'], state['singular'] = norm_backend.local_decay(p, state['singular'], 0., repeat=1)
             p.data.add_(-adaptive_lr * update)
+        self.sync_params()
 
     def init(self):
         super().init()
