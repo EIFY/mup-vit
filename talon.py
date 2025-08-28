@@ -556,6 +556,7 @@ class Scion(torch.optim.Optimizer):
             return
         index = 0
         buffer = []
+        dest = []
         assigned_tensor = None
         for group in self.param_groups:
             norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
@@ -566,11 +567,15 @@ class Scion(torch.optim.Optimizer):
                     state[key] = p.new_empty(shape_f(p.data))
                 tensor = state[key]
                 buffer.append(tensor)
+                dest.append(state)
                 if self.rank == index % self.world_size:
                     assigned_tensor = tensor
                 if len(buffer) == self.world_size:
                     dist.all_gather(buffer, assigned_tensor)
+                    for s, w in zip(dest, buffer):
+                        s[key] = w
                     buffer.clear()
+                    dest.clear()
                     assigned_tensor = None
                 index += 1
         if buffer:
@@ -579,21 +584,28 @@ class Scion(torch.optim.Optimizer):
             if assigned_tensor is None:
                 assigned_tensor = buffer[self.rank]
             dist.all_gather(buffer, assigned_tensor)
+            for s, w in zip(dest, buffer):
+                s[key] = w
 
     def sync_params(self):
         if self.world_size == 1:
             return
         index = 0
         buffer = []
+        dest = []
         assigned_p = None
         for group in self.param_groups:
             for p in group['params']:
-                buffer.append(p)
+                buffer.append(p.data)
+                dest.append(p)
                 if self.rank == index % self.world_size:
-                    assigned_p = p
+                    assigned_p = p.data
                 if len(buffer) == self.world_size:
                     dist.all_gather(buffer, assigned_p)
+                    for p, w in zip(dest, buffer):
+                        p.data = w
                     buffer.clear()
+                    dest.clear()
                     assigned_p = None
                 index += 1
         if buffer:
@@ -602,6 +614,8 @@ class Scion(torch.optim.Optimizer):
             if assigned_p is None:
                 assigned_p = buffer[self.rank]
             dist.all_gather(buffer, assigned_p)
+            for p, w in zip(dest, buffer):
+                p.data = w
 
     @torch.no_grad()
     def step(self):
