@@ -612,27 +612,27 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         if step % args.print_freq == 0:
             progress.display(step)
-            if args.wandb and is_primary(args):
-
+            if args.wandb:
                 layer_norms = {}
-                with torch.no_grad():
-                    l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
-                    if args.optimizer in ('Scion', 'Talon'):
-                        layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
-                samples_per_second_per_gpu = args.batch_size / batch_time.val
-                samples_per_second = samples_per_second_per_gpu * args.world_size
-                log_data = {
-                    "train/loss": step_loss,
-                    "data_time": data_time.val,
-                    "batch_time": batch_time.val,
-                    "samples_per_second": samples_per_second,
-                    "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                    "l2_grads": l2_grads.item(),
-                    "l2_params": math.sqrt(l2_params)
-                } | layer_norms
-                if scheduler:
-                    log_data["lr"] = scheduler.get_last_lr()[0]
-                wandb.log(log_data, step=step)
+                if args.optimizer in ('Scion', 'Talon'):
+                    layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
+                if is_primary(args):
+                    with torch.no_grad():
+                        l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
+                    samples_per_second_per_gpu = args.batch_size / batch_time.val
+                    samples_per_second = samples_per_second_per_gpu * args.world_size
+                    log_data = {
+                        "train/loss": step_loss,
+                        "data_time": data_time.val,
+                        "batch_time": batch_time.val,
+                        "samples_per_second": samples_per_second,
+                        "samples_per_second_per_gpu": samples_per_second_per_gpu,
+                        "l2_grads": l2_grads.item(),
+                        "l2_params": math.sqrt(l2_params)
+                    } | layer_norms
+                    if scheduler:
+                        log_data["lr"] = scheduler.get_last_lr()[0]
+                    wandb.log(log_data, step=step)
 
         if step % args.log_steps == 0 or step in args.specified_steps:
             if args.schedule_free:
