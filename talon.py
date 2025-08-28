@@ -517,7 +517,6 @@ class Scion(torch.optim.Optimizer):
         self.world_size = world_size
         super().__init__(params, defaults)
         self.register_state_dict_pre_hook(self.sync_state)
-        self.register_state_dict_post_hook(self.remove_unused_keys)
         self.register_load_state_dict_post_hook(self.remove_unused_keys)
 
     def assigned_parameters(self):

@@ -664,6 +664,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     ckpt['scheduler'] = scheduler.state_dict()
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
 
+            if args.optimizer in ('Scion', 'Talon'):
+                optimizer.remove_unused_keys()
+
         optimizer.zero_grad()
 
         if scheduler:
