@@ -37,6 +37,7 @@ class ColNorm(Norm):
         self.normalized = normalized
         self.transpose = transpose
 
+    @torch.compile
     def lmo(self, g):
         if self.transpose:
             g = g.transpose(0, 1) 
@@ -48,6 +49,7 @@ class ColNorm(Norm):
             g = g.transpose(0, 1) 
         return g
 
+    @torch.compile
     def local_decay(self, w, v, wd, repeat=1):
         if self.transpose:
             w.data = w.data.transpose(0, 1)
@@ -98,6 +100,7 @@ class RowNorm(Norm):
         self.normalized = normalized
         self.transpose = transpose
 
+    @torch.compile
     def lmo(self, g):
         if self.transpose:
             g = g.transpose(0, 1) 
@@ -109,6 +112,7 @@ class RowNorm(Norm):
             g = g.transpose(0, 1) 
         return g
 
+    @torch.compile
     def local_decay(self, w, v, wd, repeat=1):
         if self.transpose:
             w.data = w.data.transpose(0, 1)
@@ -146,6 +150,8 @@ class RowNorm(Norm):
 
 
 class BiasRMS(Norm):
+
+    @torch.compile
     def lmo(self, g):
         rms_values = torch.sqrt(torch.mean(g ** 2))
         g = g / (rms_values + eps)
@@ -157,6 +163,7 @@ class BiasRMS(Norm):
     def norm(self, w, v, repeat=1):
         return torch.sqrt(torch.mean(w ** 2)), v
 
+    @torch.compile
     def local_decay(self, w, v, wd, repeat=1):
         # Same as regular weight decay
         w.data.mul_(1-wd)
@@ -180,6 +187,7 @@ class SpectralConv(Norm):
     def __init__(self, steps=5):
         self.steps = steps
 
+    @torch.compile
     def lmo(self, g):
         g = PolarExpress(g.permute(2, 3, 0, 1), steps=self.steps).permute(2, 3, 0, 1)
         d_out, d_in, k, _ = g.shape
@@ -189,6 +197,7 @@ class SpectralConv(Norm):
     def dual_norm(self, g):
         return torch.sum(self.lmo(g) * g)
 
+    @torch.compile
     def norm(self, w, v, repeat=1):
         d_out, d_in, _, k = w.shape
         w = w.permute(2, 3, 0, 1)
@@ -200,6 +209,7 @@ class SpectralConv(Norm):
             v /= s
         return k**2 * (d_in / d_out)**0.5 * torch.max(s), v
 
+    @torch.compile
     def local_decay(self, w, v, wd, repeat=1):
         d_out, d_in, _, k = w.shape
         w = w.permute(2, 3, 0, 1)
@@ -260,6 +270,7 @@ class SpectralPatchifier(Norm):
     def dual_norm(self, g):
         return torch.sum(self.lmo(g) * g)
 
+    @torch.compile
     def norm(self, w, v, repeat=1):
         # Same as self.local_decay(w, norm, wd=0, repeat=repeat)
         # But it doesn't seem that torch can exploit wd=0.
@@ -273,6 +284,7 @@ class SpectralPatchifier(Norm):
         d_out, d_in = w.size(-2), w.size(-1)
         return (d_in / d_out)**0.5 * s, v
 
+    @torch.compile
     def local_decay(self, w, v, wd, repeat=1):
         w = w.reshape(len(w), -1)
         for _ in range(repeat):
@@ -284,7 +296,7 @@ class SpectralPatchifier(Norm):
             v /= s
         d_out, d_in = w.size(-2), w.size(-1)
         return (1 - wd) * (d_in / d_out)**0.5 * s, v
-    
+
     def init(self, w, init_dtype=torch.float64):
         w_fp = w.data.to(init_dtype)
         torch.nn.init.orthogonal_(w_fp)
@@ -323,6 +335,7 @@ class Spectral(Norm):
             scale = max(1,scale)
         return scale
 
+    @torch.compile
     def lmo(self, g):
         g = PolarExpress(g, steps=self.steps)
         g *= self.scale(*g.shape[-2:])
@@ -331,6 +344,7 @@ class Spectral(Norm):
     def dual_norm(self, g):
         return torch.sum(self.lmo(g) * g, dim=(-2, -1), keepdim=True)
 
+    @torch.compile
     def norm(self, w, v, repeat=1):
         for _ in range(repeat):
             u = w @ v
@@ -341,6 +355,7 @@ class Spectral(Norm):
         scale = self.scale(*w.shape[-2:])
         return s / scale, v
 
+    @torch.compile
     def local_decay(self, w, v, wd, repeat=1):
         for _ in range(repeat):
             u = w @ v
@@ -382,22 +397,27 @@ class Sign(Norm):
         self.normalized = normalized
 
     def lmo(self, g):
-        d_out, d_in = g.shape
+        lmo = torch.sign(g)
         if self.normalized:
-            return torch.sign(g) / d_in
-        else:
-            return torch.sign(g)
+            d_out, d_in = g.shape
+            lmo /= d_in
+        return lmo
 
     def dual_norm(self, g):
-        return torch.sum(g.abs())
+        norm = torch.sum(g.abs())
+        if self.normalized:
+            d_out, d_in = g.shape
+            norm /= d_in
+        return norm
 
     def norm(self, w, v, repeat=1):
-        d_out, d_in = w.shape
         norm = torch.max(w.abs())
         if self.normalized:
+            d_out, d_in = w.shape
             norm *= d_in
         return norm, v
 
+    @torch.compile
     def local_decay(self, w, _, wd, repeat=1):
         d_out, d_in = w.shape
         for _ in range(repeat):
@@ -411,13 +431,13 @@ class Sign(Norm):
         return norm, w.new_empty((0,))
 
     def init(self, w, init_dtype=torch.float64):
-        d_out, d_in = w.shape
         if self.zero_init:
             torch.nn.init.zeros_(w)
         else:
             # Generate -1/fan_in or 1/fan_in uniformly at random
             w.data = (torch.randint(0, 2, w.shape).to(w) * 2 - 1)
             if self.normalized:
+                d_out, d_in = w.shape
                 w.data /= d_in
         return torch.tensor(not self.zero_init).to(w), w.new_empty((0,))
 
@@ -430,26 +450,6 @@ class Sign(Norm):
         return (0,)
 
 
-class Auto(Norm):
-    def lmo(self, g):
-        if g.ndim >= 2:
-            return Spectral().lmo(g)
-        else:
-            return BiasRMS().lmo(g)
-
-    def local_decay(self, w, norm, wd, repeat=1):
-        if w.ndim >= 2:
-            return Spectral().local_decay(w, norm, wd, repeat)
-        else:
-            return BiasRMS().local_decay(w, norm, wd, repeat)
-
-    def init(self, w):
-        if w.ndim >= 2:
-            return Spectral().init(w)
-        else:
-            return BiasRMS().init(w)
-
-
 norm_dict = {
     'ColNorm': ColNorm,
     'RowNorm': RowNorm,
@@ -458,7 +458,6 @@ norm_dict = {
     'SpectralPatchifier':SpectralPatchifier,
     'Spectral': Spectral,
     'Sign': Sign,
-    'Auto': Auto,
 }
 
 
@@ -716,14 +715,14 @@ class Talon(Scion):
 
     def init(self):
         super().init()
+        for group, norm_backend, p in self.assigned_parameters():
+            state = self.state[p]
+            state['diff_singular'] = state['singular'].clone()
+            state['smoothness'] = torch.ones_like(state['norm']) / group['lr']
         for group in self.param_groups:
             initial_lr = group['lr'] * group['lr_multiplier']
             if group['corrected']:
                 group['weight_decay'] /= initial_lr
-            for p in group['params']:
-                state = self.state[p]
-                state['diff_singular'] = state['singular'].clone()
-                state['smoothness'] = torch.ones_like(state['norm']) / group['lr']
             group['lr'] = group.pop('lr_multiplier')
 
 
