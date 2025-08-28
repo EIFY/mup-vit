@@ -86,6 +86,8 @@ class ColNorm(Norm):
     def singular_shape(self, w):
         return (0,)
 
+    diff_singular_shape = singular_shape
+
 
 class RowNorm(Norm):
     """
@@ -146,7 +148,9 @@ class RowNorm(Norm):
     smoothness_shape = norm_shape
 
     def singular_shape(self, w):
-        return (0.)
+        return (0,)
+
+    diff_singular_shape = singular_shape
 
 
 class BiasRMS(Norm):
@@ -180,7 +184,9 @@ class BiasRMS(Norm):
     smoothness_shape = norm_shape
 
     def singular_shape(self, w):
-        return (0.)
+        return (0,)
+
+    diff_singular_shape = singular_shape
 
 
 class SpectralConv(Norm):
@@ -252,6 +258,8 @@ class SpectralConv(Norm):
         d_out, d_in, k, _ = w.shape
         return (k, k, d_in, 1)
 
+    diff_singular_shape = singular_shape
+
 
 class SpectralPatchifier(Norm):
     """For patchifier like ViT's with kernel_size == stride,
@@ -318,6 +326,8 @@ class SpectralPatchifier(Norm):
         d_out, *rest = w.shape
         d_in = math.prod(rest)
         return (d_in,)
+
+    diff_singular_shape = singular_shape
 
 
 class Spectral(Norm):
@@ -390,6 +400,8 @@ class Spectral(Norm):
     def singular_shape(self, w):
         return w.shape[:-2] + (w.shape[-1], 1)
 
+    diff_singular_shape = singular_shape
+
 
 class Sign(Norm):
     def __init__(self, zero_init=False, normalized=True):
@@ -448,6 +460,8 @@ class Sign(Norm):
 
     def singular_shape(self, w):
         return (0,)
+
+    diff_singular_shape = singular_shape
 
 
 norm_dict = {
@@ -549,7 +563,7 @@ class Scion(torch.optim.Optimizer):
             for p in group['params']:
                 state = self.state[p]
                 if key not in state:
-                    state[key] = p.new_empty(shape_f(w))
+                    state[key] = p.new_empty(shape_f(p.data))
                 tensor = state[key]
                 buffer.append(tensor)
                 if self.rank == index % self.world_size:
@@ -561,9 +575,9 @@ class Scion(torch.optim.Optimizer):
                 index += 1
         if buffer:
             padding = self.world_size - len(buffer) % self.world_size
-            buffer.extend(None for _ in range(padding))
+            buffer.extend(p.new_empty((0,)) for _ in range(padding))
             if assigned_tensor is None:
-                buffer[self.rank] = assigned_tensor = p.new_empty((0,))
+                assigned_tensor = buffer[self.rank]
             dist.all_gather(buffer, assigned_tensor)
 
     def sync_params(self):
@@ -584,9 +598,9 @@ class Scion(torch.optim.Optimizer):
                 index += 1
         if buffer:
             padding = self.world_size - len(buffer) % self.world_size
-            buffer.extend(None for _ in range(padding))
+            buffer.extend(p.new_empty((0,)) for _ in range(padding))
             if assigned_p is None:
-                buffer[self.rank] = assigned_p = p.new_empty((0,))
+                assigned_p = buffer[self.rank]
             dist.all_gather(buffer, assigned_p)
 
     @torch.no_grad()
