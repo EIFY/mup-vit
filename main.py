@@ -320,9 +320,9 @@ def main_worker(gpu, args):
         output = []
 
         for n, p in model.named_parameters():
-            if n == "conv_proj.weight":
+            if n.endswith("conv_proj.weight"):
                 patchifier.append(p)
-            elif n == "heads.head.weight":
+            elif n.endswith("heads.head.weight"):
                 output.append(p)
             elif p.ndim >= 2:
                 linear.append(p)

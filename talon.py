@@ -430,7 +430,7 @@ class Sign(Norm):
         return norm, v
 
     @torch.compile
-    def local_decay(self, w, _, wd, repeat=1):
+    def local_decay(self, w, v, wd, repeat=1):
         d_out, d_in = w.shape
         for _ in range(repeat):
             flat_index = torch.argmax(w.abs())
@@ -440,7 +440,7 @@ class Sign(Norm):
         norm = torch.max(w.abs())
         if self.normalized:
             norm *= d_in
-        return norm, w.new_empty((0,))
+        return norm, v
 
     def init(self, w, init_dtype=torch.float64):
         if self.zero_init:
