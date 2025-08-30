@@ -360,7 +360,7 @@ def main_worker(gpu, args):
         non_wd_params = []
 
         for n, p in model.named_parameters():
-            if n == "heads.head.weight":
+            if n.endswith("heads.head.weight"):
                 output.append(p)
             elif weight_decay_param(n, p) and p.requires_grad:
                 wd_params.append(p)
@@ -368,9 +368,9 @@ def main_worker(gpu, args):
                 non_wd_params.append(p)
 
         params = [
-            {"params": output, 'lr': args.sign_lr, "weight_decay": sign_wd, 'corrected': args.head_corrected},
             {"params": wd_params, 'corrected': args.corrected},
             {"params": non_wd_params, "weight_decay": 0., 'corrected': False},
+            {"params": output, 'lr': args.sign_lr, "weight_decay": sign_wd, 'corrected': args.head_corrected},
         ]
 
         default = dict(
@@ -613,7 +613,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         if step % args.print_freq == 0:
             progress.display(step)
             if args.wandb:
-                layer_norms = {}
+                # head is always in the last parameter group
+                head = optimizer.param_groups[-1]['params'][0]
+                layer_norms = {"l2_head": torch.linalg.matrix_norm(head).item()}
                 if args.optimizer in ('Scion', 'Talon'):
                     layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
                 if is_primary(args):
