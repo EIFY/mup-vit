@@ -49,21 +49,6 @@ class ColNorm(Norm):
             g = g.transpose(0, 1) 
         return g
 
-    @torch.compile
-    def local_decay(self, w, v, wd, repeat=1):
-        if self.transpose:
-            w.data = w.data.transpose(0, 1)
-        for _ in range(repeat):
-            col_norm = w.norm(dim=0)
-            index = torch.argmax(col_norm)
-            w.data[:,index].mul_(1-wd)
-        norm = (1 - wd) * col_norm[index] / math.sqrt(w.size(0))
-        if self.normalized:
-            norm *= w.size(1)
-        if self.transpose:
-            w.data = w.data.transpose(0, 1)
-        return norm, v
-
     def init(self, w, init_dtype=torch.float64):
         dtype = w.data.dtype
         if self.transpose:
@@ -114,21 +99,6 @@ class RowNorm(Norm):
             g = g.transpose(0, 1) 
         return g
 
-    @torch.compile
-    def local_decay(self, w, v, wd, repeat=1):
-        if self.transpose:
-            w.data = w.data.transpose(0, 1)
-        for _ in range(repeat):
-            row_norm = w.norm(dim=-1)
-            index = torch.argmax(row_norm)
-            w.data[index,:].mul_(1-wd)
-        norm = (1 - wd) * row_norm[index]
-        if self.normalized:
-            norm *= math.sqrt(w.size(-1))
-        if self.transpose:
-            w.data = w.data.transpose(0, 1)
-        return norm, v
-
     def init(self, w, init_dtype=torch.float64):
         dtype = w.data.dtype
         if self.transpose:
@@ -166,13 +136,6 @@ class BiasRMS(Norm):
 
     def norm(self, w, v, repeat=1):
         return torch.sqrt(torch.mean(w ** 2)), v
-
-    @torch.compile
-    def local_decay(self, w, v, wd, repeat=1):
-        # Same as regular weight decay
-        w.data.mul_(1-wd)
-        rms_values = torch.sqrt(torch.mean(w ** 2))
-        return rms_values, v
 
     def init(self, w, init_dtype=torch.float64):
         torch.nn.init.zeros_(w)
@@ -213,25 +176,6 @@ class SpectralConv(Norm):
             v = w.mT @ u
             s = torch.linalg.vector_norm(v, dim=-2, keepdim=True)
             v /= s
-        return k**2 * (d_in / d_out)**0.5 * torch.max(s), v
-
-    @torch.compile
-    def local_decay(self, w, v, wd, repeat=1):
-        d_out, d_in, _, k = w.shape
-        w = w.permute(2, 3, 0, 1)
-        for _ in range(repeat):
-            u = w @ v
-            u /= torch.linalg.vector_norm(u, dim=-2, keepdim=True)
-            v = w.mT @ u
-            s = torch.linalg.vector_norm(v, dim=-2, keepdim=True)
-            flat_index = torch.argmax(s)
-            row = flat_index // k
-            col = flat_index % k
-            # It may be justified & more efficient to only power-iterate
-            # w[row,col,...] in the next iteration.
-            w.data[row,col,...].add_(u[row,col,...] @ v[row,col,...].mT, alpha=-wd)
-            v /= s
-        s[row,col].mul_(1 - wd)
         return k**2 * (d_in / d_out)**0.5 * torch.max(s), v
 
     def init(self, w, init_dtype=torch.float64):
@@ -291,19 +235,6 @@ class SpectralPatchifier(Norm):
             v /= s
         d_out, d_in = w.size(-2), w.size(-1)
         return (d_in / d_out)**0.5 * s, v
-
-    @torch.compile
-    def local_decay(self, w, v, wd, repeat=1):
-        w = w.reshape(len(w), -1)
-        for _ in range(repeat):
-            u = w @ v
-            u /= torch.linalg.vector_norm(u)
-            v = w.mT @ u
-            w.data.add_(torch.outer(u, v), alpha=-wd)
-            s = torch.linalg.vector_norm(v)
-            v /= s
-        d_out, d_in = w.size(-2), w.size(-1)
-        return (1 - wd) * (d_in / d_out)**0.5 * s, v
 
     def init(self, w, init_dtype=torch.float64):
         w_fp = w.data.to(init_dtype)
@@ -365,18 +296,6 @@ class Spectral(Norm):
         scale = self.scale(*w.shape[-2:])
         return s / scale, v
 
-    @torch.compile
-    def local_decay(self, w, v, wd, repeat=1):
-        for _ in range(repeat):
-            u = w @ v
-            u /= torch.linalg.vector_norm(u, dim=-2, keepdim=True)
-            v = w.mT @ u
-            w.data.add_(-wd * u @ v.mT)
-            s = torch.linalg.vector_norm(v, dim=-2, keepdim=True)
-            v /= s
-        scale = self.scale(*w.shape[-2:])
-        return (1 - wd) * s / scale, v
-
     def init(self, w, init_dtype=torch.float64):
         w_fp = w.data.to(init_dtype)
         l = [range(s) for s in w_fp.shape[:-2]]
@@ -426,19 +345,6 @@ class Sign(Norm):
         norm = torch.max(w.abs())
         if self.normalized:
             d_out, d_in = w.shape
-            norm *= d_in
-        return norm, v
-
-    @torch.compile
-    def local_decay(self, w, v, wd, repeat=1):
-        d_out, d_in = w.shape
-        for _ in range(repeat):
-            flat_index = torch.argmax(w.abs())
-            row = flat_index // d_in
-            col = flat_index % d_in
-            w.data[row,col].mul_(1-wd)
-        norm = torch.max(w.abs())
-        if self.normalized:
             norm *= d_in
         return norm, v
 
@@ -619,12 +525,12 @@ class Scion(torch.optim.Optimizer):
                 g = buf
 
             update = norm_backend.lmo(g)
-            if group['local_decay']:
-                state['norm'], state['singular'] = norm_backend.local_decay(p, state['singular'], wd, repeat=group['repeat'])
-            else:
-                p.data.mul_(1-wd)
-                state['norm'], state['singular'] = norm_backend.local_decay(p, state['singular'], 0., repeat=1)
+
+            p.data.mul_(1-wd)
+            state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
+
             p.data.add_(update, alpha=-lr)
+
         self.sync_params()
 
     def report_norms(self):
@@ -718,12 +624,11 @@ class Talon(Scion):
             state['prev_param'] = p.data.clone()
             state['prev_grad'] = p.grad
 
-            if group['local_decay']:
-                state['norm'], state['singular'] = norm_backend.local_decay(p, state['singular'], wd, repeat=group['repeat'])
-            else:
-                p.data.mul_(1-wd)
-                state['norm'], state['singular'] = norm_backend.local_decay(p, state['singular'], 0., repeat=1)
+            p.data.mul_(1-wd)
+            state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
+
             p.data.add_(-adaptive_lr * update)
+
         self.sync_params()
 
     def init(self):

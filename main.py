@@ -112,9 +112,6 @@ parser.add_argument('--decoupled-weight-decay', default=True,
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
-parser.add_argument('--local-decay', action='store_true')
-parser.add_argument("--repeat", default=10, type=int,
-                    help="Number of repeats of local weight decay. No effect without --local-decay")
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
@@ -350,7 +347,7 @@ def main_worker(gpu, args):
             'corrected': args.head_corrected,
         }]
 
-        defaults = dict(lr=args.lr, momentum=1-args.beta1, weight_decay=wd, local_decay=args.local_decay, repeat=args.repeat)
+        defaults = dict(lr=args.lr, momentum=1-args.beta1, weight_decay=wd)
         if args.optimizer == 'Talon':
             defaults |= dict(beta=args.beta2, lr_multiplier=args.lr_multiplier)
         optimizer = getattr(talon, args.optimizer)(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
