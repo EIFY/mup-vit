@@ -3,6 +3,7 @@ import math
 
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 
 
 #######################################################
@@ -631,7 +632,7 @@ class Talon(Scion):
 
         self.sync_params()
 
-    def report_alignment(self):
+    def report_cosine(self):
         for key in ('singular', 'diff_singular', 'prev_param'):
             self.sync_state_for(key)
         res = {}
@@ -641,11 +642,11 @@ class Talon(Scion):
                 if group['norm'].startswith('Spectral'):
                     s, diff_s = state['singular'], state['diff_singular']
                     dot = torch.sum(s * diff_s, dim=-2)
-                    res['singular_dot_product_' + n] = torch.mean(dot).item()
+                    res['singular_cosine_' + n] = torch.mean(dot).item()
                 w, diff = p.data, p.data - state['prev_param']
                 w, diff = torch.flatten(w), torch.flatten(diff)
-                normalized_dot = torch.dot(w, diff) / (torch.linalg.vector_norm(diff) + eps)
-                res['weight_dot_product_' + n] = normalized_dot.item()
+                cosine = F.cosine_similarity(w, diff, dim=0, eps=eps)
+                res['weight_cosine_' + n] = cosine.item()
         return res
 
     def init(self):

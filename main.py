@@ -634,7 +634,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 if args.optimizer in ('Scion', 'Talon'):
                     layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
                 if args.optimizer == 'Talon':
-                    layer_norms |= optimizer.report_alignment()
+                    layer_norms |= optimizer.report_cosine()
 
                 if is_primary(args):
                     with torch.no_grad():
