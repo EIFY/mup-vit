@@ -646,7 +646,7 @@ class Talon(Scion):
                     res['singular_cosine_' + n] = torch.mean(dot).item()
                 w, update = state['prev_param'], state['update']
                 w, update = torch.flatten(w), torch.flatten(update)
-                cosine = F.cosine_similarity(w, update, dim=0, eps=eps)
+                cosine = F.cosine_similarity(w, -update, dim=0, eps=eps)
                 res['weight_cosine_' + n] = cosine.item()
         return res
 
