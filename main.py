@@ -316,30 +316,40 @@ def main_worker(gpu, args):
         bias = []
         output = []
 
-        for n, p in model.named_parameters():
+        for t in model.named_parameters():
+            n, p = t
             if n.endswith("conv_proj.weight"):
-                patchifier.append(p)
+                patchifier.append(t)
             elif n.endswith("heads.head.weight"):
-                output.append(p)
+                output.append(t)
             elif p.ndim >= 2:
-                linear.append(p)
+                linear.append(t)
             else:
-                bias.append(p)
+                bias.append(t)
+
+        patchifier = list(zip(*patchifier))
+        linear = list(zip(*linear))
+        bias = list(zip(*bias))
+        output = list(zip(*output))
 
         optim_groups = [{
-            'params': patchifier,
+            'param_names': patchifier[0],
+            'params': patchifier[1],
             'norm': 'SpectralPatchifier',
             'corrected': args.corrected,
         }, {
-            'params': linear,
+            'param_names': linear[0],
+            'params': linear[1],
             'norm': 'Spectral',
             'corrected': args.corrected,
         }, {
-            'params': bias,
+            'param_names': bias[0],
+            'params': bias[1],
             'norm': 'BiasRMS',
             'corrected': args.corrected,
         }, {
-            'params': output,
+            'param_names': output[0],
+            'params': output[1],
             'norm': 'Sign',
             'norm_kwargs': {'zero_init': args.optimizer == 'Scion'},
             'lr': args.sign_lr,
@@ -355,22 +365,27 @@ def main_worker(gpu, args):
 
     elif args.optimizer == 'AdamW':
 
-        output = []
         wd_params = []
         non_wd_params = []
+        output = []
 
-        for n, p in model.named_parameters():
+        for t in model.named_parameters():
+            n, p = t
             if n.endswith("heads.head.weight"):
-                output.append(p)
+                output.append(t)
             elif weight_decay_param(n, p) and p.requires_grad:
-                wd_params.append(p)
+                wd_params.append(t)
             elif not weight_decay_param(n, p) and p.requires_grad:
-                non_wd_params.append(p)
+                non_wd_params.append(t)
+
+        wd_params = list(zip(*wd_params))
+        non_wd_params = list(zip(*non_wd_params))
+        output = list(zip(*output))
 
         params = [
-            {"params": wd_params, 'corrected': args.corrected},
-            {"params": non_wd_params, "weight_decay": 0., 'corrected': False},
-            {"params": output, 'lr': args.sign_lr, "weight_decay": sign_wd, 'corrected': args.head_corrected},
+            {'param_names': wd_params[0], "params": wd_params[1], 'corrected': args.corrected},
+            {'param_names': non_wd_params[0], "params": non_wd_params[1], "weight_decay": 0., 'corrected': False},
+            {'param_names': output[0], "params": output[1], 'lr': args.sign_lr, "weight_decay": sign_wd, 'corrected': args.head_corrected},
         ]
 
         default = dict(
@@ -616,10 +631,10 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 # head is always in the last parameter group
                 head = optimizer.param_groups[-1]['params'][0]
                 layer_norms = {"l2_head": torch.linalg.matrix_norm(head).item()}
-                if args.optimizer == 'Scion':
+                if args.optimizer in ('Scion', 'Talon'):
                     layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
-                elif args.optimizer == 'Talon':
-                    layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'], layer_norms['weight_diff_dot_product'] = optimizer.report_norms()
+                if args.optimizer == 'Talon':
+                    layer_norms |= optimizer.report_alignment()
 
                 if is_primary(args):
                     with torch.no_grad():

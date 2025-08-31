@@ -631,20 +631,22 @@ class Talon(Scion):
 
         self.sync_params()
 
-    def report_norms(self):
-        spectral, bias, sign = super().report_norms()
-        for key in ('singular', 'diff_singular'):
+    def report_alignment(self):
+        for key in ('singular', 'diff_singular', 'prev_param'):
             self.sync_state_for(key)
-        dot_prods = []
+        res = {}
         for group in self.param_groups:
-            for p in group['params']:
+            for n, p in zip(group['param_names'], group['params']):
+                state = self.state[p]
                 if group['norm'].startswith('Spectral'):
-                    state = self.state[p]
                     s, diff_s = state['singular'], state['diff_singular']
                     dot = torch.sum(s * diff_s, dim=-2)
-                    dot_prods.extend(dot.flatten().tolist())
-        dot_prods = math.fsum(dot_prods) / len(dot_prods)
-        return spectral, bias, sign, dot_prods
+                    res['singular_dot_product_' + n] = torch.mean(dot).item()
+                w, diff = p.data, p.data - state['prev_param']
+                w, diff = torch.flatten(w), torch.flatten(diff)
+                normalized_dot = torch.dot(w, diff) / (torch.linalg.vector_norm(diff) + eps)
+                res['weight_dot_product_' + n] = normalized_dot.item()
+        return res
 
     def init(self):
         super().init()
