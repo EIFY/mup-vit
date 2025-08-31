@@ -634,7 +634,7 @@ class Talon(Scion):
         self.sync_params()
 
     def report_cosine(self):
-        for key in ('singular', 'diff_singular', 'prev_param'):
+        for key in ('singular', 'diff_singular', 'prev_param', 'update'):
             self.sync_state_for(key)
         res = {}
         for group in self.param_groups:
