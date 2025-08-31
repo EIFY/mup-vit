@@ -229,9 +229,9 @@ class SpectralPatchifier(Norm):
         w = w.reshape(len(w), -1)
         for _ in range(repeat):
             u = w @ v
-            u /= torch.linalg.vector_norm(u)
+            u /= torch.linalg.vector_norm(u, dim=-2, keepdim=True)
             v = w.mT @ u
-            s = torch.linalg.vector_norm(v)
+            s = torch.linalg.vector_norm(v, dim=-2, keepdim=True)
             v /= s
         d_out, d_in = w.size(-2), w.size(-1)
         return (d_in / d_out)**0.5 * s, v
@@ -243,20 +243,20 @@ class SpectralPatchifier(Norm):
         d_in = math.prod(rest)
         w_fp.mul_((d_out / d_in)**0.5)
         w.data = w_fp.to(dtype=w.data.dtype)
-        v = torch.normal(0, 1, (d_in,))
-        v /= torch.linalg.vector_norm(v)
-        s = torch.tensor(1.)
+        v = torch.normal(0, 1, (d_in, 1))
+        v /= torch.linalg.vector_norm(v, dim=-2, keepdim=True)
+        s = torch.ones((1, 1))
         return s.to(w), v.to(w)
 
     def norm_shape(self, w):
-        return ()
+        return (1, 1)
 
     smoothness_shape = norm_shape
 
     def singular_shape(self, w):
         d_out, *rest = w.shape
         d_in = math.prod(rest)
-        return (d_in,)
+        return (d_in, 1)
 
     diff_singular_shape = singular_shape
 
@@ -547,7 +547,7 @@ class Scion(torch.optim.Optimizer):
                     bias.append(norm.item())
                 else:
                     sign.append(norm.item())
-        return math.prod(spectral) ** (1 / len(spectral)), sum(bias) / len(bias), sum(sign) / len(sign)
+        return math.prod(spectral) ** (1 / len(spectral)), math.fsum(bias) / len(bias), math.fsum(sign) / len(sign)
 
     def init(self):
         init_dtype = torch.float32 if torch.backends.mps.is_available() else torch.float64
@@ -630,6 +630,21 @@ class Talon(Scion):
             p.data.add_(-adaptive_lr * update)
 
         self.sync_params()
+
+    def report_norms(self):
+        spectral, bias, sign = super().report_norms()
+        for key in ('singular', 'diff_singular'):
+            self.sync_state_for(key)
+        dot_prods = []
+        for group in self.param_groups:
+            for p in group['params']:
+                if group['norm'].startswith('Spectral'):
+                    state = self.state[p]
+                    s, diff_s = state['singular'], state['diff_singular']
+                    dot = torch.sum(s * diff_s, dim=-2)
+                    dot_prods.extend(dot.flatten().tolist())
+        dot_prods = math.fsum(dot_prods) / len(dot_prods)
+        return spectral, bias, sign, dot_prods
 
     def init(self):
         super().init()

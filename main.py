@@ -616,8 +616,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 # head is always in the last parameter group
                 head = optimizer.param_groups[-1]['params'][0]
                 layer_norms = {"l2_head": torch.linalg.matrix_norm(head).item()}
-                if args.optimizer in ('Scion', 'Talon'):
+                if args.optimizer == 'Scion':
                     layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
+                elif args.optimizer == 'Talon':
+                    layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'], layer_norms['weight_diff_dot_product'] = optimizer.report_norms()
+
                 if is_primary(args):
                     with torch.no_grad():
                         l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
