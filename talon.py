@@ -126,7 +126,6 @@ class RowNorm(Norm):
 
 class BiasRMS(Norm):
 
-    @torch.compile
     def lmo(self, g):
         rms_values = torch.sqrt(torch.mean(g ** 2))
         g = g / (rms_values + eps)
@@ -277,7 +276,6 @@ class Spectral(Norm):
             scale = max(1,scale)
         return scale
 
-    @torch.compile
     def lmo(self, g):
         g = PolarExpress(g, steps=self.steps)
         g *= self.scale(*g.shape[-2:])
@@ -690,7 +688,8 @@ def PolarExpress(G: torch.Tensor, steps: int) -> torch.Tensor:
 
 if not torch.backends.mps.is_available():
     PolarExpress = torch.compile(PolarExpress)
-
+    Spectral.lmo = torch.compile(Spectral.lmo)
+    BiasRMS.lmo = torch.compile(BiasRMS.lmo)
 
 def zeroth_power_via_svd(G):
     U, S, V = G.svd()

@@ -94,6 +94,8 @@ parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
+parser.add_argument('--final-lr-multiplier', default=0., type=float,
+                    help='final LR multiplier at the end of the schedule')
 parser.add_argument('--corrected', action='store_true', default=False,
                     help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
 parser.add_argument('--head-corrected', action='store_true', default=False,
@@ -513,7 +515,10 @@ def main_worker(gpu, args):
     if args.schedule_free or not args.schedule:
         scheduler = None
     else:
-        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
+        cosine_steps = total_steps - args.warmup
+        def cosine_lr(step):
+            return args.final_lr_multiplier + (1 - args.final_lr_multiplier) / 2 * (1 + math.cos(step * math.pi / cosine_steps))
+        cosine = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=cosine_lr)
         if args.warmup:
             warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
             scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
