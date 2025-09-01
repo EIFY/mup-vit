@@ -624,7 +624,7 @@ class Talon(Scion):
 
             state['prev_param'] = p.data.clone()
             state['prev_grad'] = p.grad
-            state['update'] = update
+            state['cosine'] = F.cosine_similarity(p.data.flatten(), -update.flatten(), dim=0, eps=eps)
 
             p.data.mul_(1-wd)
             state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
@@ -634,7 +634,7 @@ class Talon(Scion):
         self.sync_params()
 
     def report_cosine(self):
-        for key in ('singular', 'diff_singular', 'prev_param', 'update'):
+        for key in ('singular', 'diff_singular', 'cosine'):
             self.sync_state_for(key)
         res = {}
         for group in self.param_groups:
@@ -644,10 +644,7 @@ class Talon(Scion):
                     s, diff_s = state['singular'], state['diff_singular']
                     dot = torch.sum(s * diff_s, dim=-2)
                     res['singular_cosine_' + n] = torch.mean(dot).item()
-                w, update = state['prev_param'], state['update']
-                w, update = torch.flatten(w), torch.flatten(update)
-                cosine = F.cosine_similarity(w, -update, dim=0, eps=eps)
-                res['weight_cosine_' + n] = cosine.item()
+                res['weight_cosine_' + n] = state['cosine'].item()
         return res
 
     def init(self):
