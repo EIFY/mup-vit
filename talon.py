@@ -5,6 +5,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+import numpy as np
 
 #######################################################
 # Scion
@@ -641,7 +642,10 @@ class Talon(Scion):
                 if group['norm'].startswith('Spectral'):
                     s, diff_s = state['singular'], state['diff_singular']
                     dot = torch.sum(s * diff_s, dim=-2)
-                    res['singular_cosine_' + n] = torch.mean(dot).item()
+                    dot = torch.squeeze(dot, dim=-1).numpy(force=True)
+                    for index, x in np.ndenumerate(dot):
+                        t = ('singular_cosine',) + tuple(str(i) for i in index) + (n,)
+                        res['_'.join(t)] = x.item()
                 res['weight_cosine_' + n] = state['cosine'].item()
         return res
 
