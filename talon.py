@@ -25,6 +25,9 @@ class Norm(object):
 
     prev_param_shape = prev_grad_shape = momentum_buffer_shape
 
+    def cosine_shape(self, w):
+        return ()
+
 
 class ColNorm(Norm):
     """
