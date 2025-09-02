@@ -464,9 +464,12 @@ def main_worker(gpu, args):
     if args.evaluate:
         # evaluate on validation set.
         validate(val_loader, model, args.start_step, device, args)
-        return
+    else:
+        train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
 
-    train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
+    if args.distributed or args.ngpus_per_node > 1:
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 def infinite_loader(loader, sampler):
