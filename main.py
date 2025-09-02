@@ -17,6 +17,7 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
@@ -624,26 +625,37 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         # do SGD step
         l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
+        layer_norms = {"l2_grads": l2_grads.item()}
+
+        # AdamW implementation is very involved so it's easier to back out the update
+        if is_primary(args) and not step % args.print_freq and args.wandb and args.optimizer == 'AdamW':
+            prev_param = {p: p.data.clone() for p in model.parameters()}
         optimizer.step()
+        if is_primary(args) and not step % args.print_freq and args.wandb and args.optimizer == 'AdamW':
+            for group in optimizer.param_groups:
+                mul = group['lr'] * group['weight_decay'] - 1
+                for n, p in zip(group['param_names'], group['params']):
+                    prev_p = prev_param[p]
+                    update = torch.add(p.data, prev_p, alpha=mul)
+                    layer_norms['weight_cosine_' + n] = F.cosine_similarity(prev_p.flatten(), update.flatten(), dim=0).item()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if step % args.print_freq == 0:
+        if not step % args.print_freq:
             progress.display(step)
             if args.wandb:
                 # head is always in the last parameter group
                 head = optimizer.param_groups[-1]['params'][0]
-                layer_norms = {"l2_head": torch.linalg.matrix_norm(head).item()}
+                layer_norms["l2_head"] = torch.linalg.matrix_norm(head).item()
                 if args.optimizer in ('Scion', 'Talon'):
                     layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
                 if args.optimizer == 'Talon':
                     layer_norms |= optimizer.report_cosine()
 
                 if is_primary(args):
-                    with torch.no_grad():
-                        l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
+                    l2_params = sum(p.data.square().sum().item() for p in model.parameters())
                     samples_per_second_per_gpu = args.batch_size / batch_time.val
                     samples_per_second = samples_per_second_per_gpu * args.world_size
                     log_data = {
@@ -652,7 +664,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "batch_time": batch_time.val,
                         "samples_per_second": samples_per_second,
                         "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                        "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params)
                     } | layer_norms
                     if scheduler:
