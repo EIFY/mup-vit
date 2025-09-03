@@ -317,6 +317,7 @@ def main_worker(gpu, args):
         patchifier = []
         linear = []
         bias = []
+        pre_logits = []
         output = []
 
         for t in model.named_parameters():
@@ -325,6 +326,8 @@ def main_worker(gpu, args):
                 patchifier.append(t)
             elif n.endswith("heads.head.weight"):
                 output.append(t)
+            elif n.endswith("heads.pre_logits.weight"):
+                pre_logits.append(t)
             elif p.ndim >= 2:
                 linear.append(t)
             else:
@@ -359,6 +362,15 @@ def main_worker(gpu, args):
             'weight_decay': sign_wd,
             'corrected': args.head_corrected,
         }]
+
+        if pre_logits:
+            pre_logits = list(zip(*pre_logits))
+            optim_groups.append({
+                'param_names': pre_logits[0],
+                'params': pre_logits[1],
+                'norm': 'Spectral',
+                'corrected': args.head_corrected,
+            })
 
         defaults = dict(lr=args.lr, momentum=1-args.beta1, weight_decay=wd)
         if args.optimizer == 'Talon':
@@ -646,15 +658,17 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         if not step % args.print_freq:
             progress.display(step)
             if args.wandb:
-                # head is always in the last parameter group
-                head = optimizer.param_groups[-1]['params'][0]
-                layer_norms["l2_head"] = torch.linalg.matrix_norm(head).item()
+
                 if args.optimizer in ('Scion', 'Talon'):
                     layer_norms['spectral_norm'], layer_norms['bias_norm'], layer_norms['sign_norm'] = optimizer.report_norms()
                 if args.optimizer == 'Talon':
                     layer_norms |= optimizer.report_cosine()
 
                 if is_primary(args):
+                    for group in optimizer.param_groups:
+                        for n, p in zip(group['param_names'], group['params']):
+                            layer_norms["l2_" + n] = torch.linalg.vector_norm(p.data).item()
+
                     l2_params = sum(p.data.square().sum().item() for p in model.parameters())
                     samples_per_second_per_gpu = args.batch_size / batch_time.val
                     samples_per_second = samples_per_second_per_gpu * args.world_size
