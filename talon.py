@@ -23,10 +23,14 @@ class Norm(object):
     def momentum_buffer_shape(self, w):
         return w.shape
 
-    prev_param_shape = prev_grad_shape = momentum_buffer_shape
-
-    def cosine_shape(self, w):
+    def weight_cosine_shape(self, w):
         return ()
+
+    def singular_shape(self, w):
+        raise NotImplementedError
+
+    def singular_cosine_shape(self, w):
+        return self.singular_shape(w)[:-2]
 
 
 class ColNorm(Norm):
@@ -76,8 +80,6 @@ class ColNorm(Norm):
     def singular_shape(self, w):
         return (0,)
 
-    diff_singular_shape = singular_shape
-
 
 class RowNorm(Norm):
     """
@@ -125,8 +127,6 @@ class RowNorm(Norm):
     def singular_shape(self, w):
         return (0,)
 
-    diff_singular_shape = singular_shape
-
 
 class BiasRMS(Norm):
 
@@ -152,8 +152,6 @@ class BiasRMS(Norm):
 
     def singular_shape(self, w):
         return (0,)
-
-    diff_singular_shape = singular_shape
 
 
 class SpectralConv(Norm):
@@ -206,7 +204,8 @@ class SpectralConv(Norm):
         d_out, d_in, k, _ = w.shape
         return (k, k, d_in, 1)
 
-    diff_singular_shape = singular_shape
+    def singular_cosine(self, w, v, update):
+        return F.cosine_similarity(w.permute(2, 3, 0, 1) @ v, -update.to(v).permute(2, 3, 0, 1) @ v, dim=-2, eps=eps).squeeze(-1)
 
 
 class SpectralPatchifier(Norm):
@@ -262,7 +261,8 @@ class SpectralPatchifier(Norm):
         d_in = math.prod(rest)
         return (d_in, 1)
 
-    diff_singular_shape = singular_shape
+    def singular_cosine(self, w, v, update):
+        return F.cosine_similarity(w.reshape(len(w), -1) @ v, -update.to(v).reshape(len(w), -1) @ v, dim=-2, eps=eps).squeeze(-1)
 
 
 class Spectral(Norm):
@@ -322,7 +322,8 @@ class Spectral(Norm):
     def singular_shape(self, w):
         return w.shape[:-2] + (w.shape[-1], 1)
 
-    diff_singular_shape = singular_shape
+    def singular_cosine(self, w, v, update):
+        return F.cosine_similarity(w @ v, -update.to(v) @ v, dim=-2, eps=eps).squeeze(-1)
 
 
 class Sign(Norm):
@@ -369,8 +370,6 @@ class Sign(Norm):
 
     def singular_shape(self, w):
         return (0,)
-
-    diff_singular_shape = singular_shape
 
 
 norm_dict = {
@@ -591,7 +590,7 @@ class Talon(Scion):
         ... }]
         >>> optimizer = Talon(optim_groups, lr=2**-12, momentum=0.1)
     """
-    state_keys = ('norm', 'singular', 'momentum_buffer', 'diff_singular', 'smoothness', 'prev_param', 'prev_grad')
+    state_keys = ('norm', 'singular', 'momentum_buffer', 'smoothness')
 
     @torch.no_grad()
     def step(self):
@@ -611,12 +610,6 @@ class Talon(Scion):
                 buf.mul_(1-momentum).add_(g, alpha=momentum)
                 g = buf
 
-            if 'prev_param' in state:
-                norm_param_diff, state['diff_singular'] = norm_backend.norm(p.data - state['prev_param'], state['diff_singular'], repeat=5)
-                norm_grad_diff = norm_backend.dual_norm(p.grad - state['prev_grad'])
-                nonzero = torch.minimum(norm_grad_diff, norm_param_diff) > eps
-                state['smoothness'][nonzero] = beta * state['smoothness'][nonzero] + (1-beta) * (norm_grad_diff / norm_param_diff)[nonzero]
-
             update = norm_backend.lmo(g)
 
             adaptive_lr = lr / state['smoothness']
@@ -624,39 +617,35 @@ class Talon(Scion):
             if group['corrected']:
                 wd *= adaptive_lr
 
-            state['prev_param'] = p.data.clone()
-            state['prev_grad'] = p.grad
-            state['cosine'] = F.cosine_similarity(p.data.flatten(), -update.flatten(), dim=0, eps=eps)
+            if group['norm'].startswith('Spectral'):
+                state['singular_cosine'] = norm_backend.singular_cosine(p.data, state['singular'], update)
+            state['weight_cosine'] = F.cosine_similarity(p.data.flatten(), -update.flatten(), dim=0, eps=eps)
 
             p.data.mul_(1-wd)
             state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
-
             p.data.add_(-adaptive_lr * update)
 
         self.sync_params()
 
     def report_cosine(self):
-        for key in ('singular', 'diff_singular', 'cosine'):
+        for key in ('singular', 'singular_cosine', 'weight_cosine'):
             self.sync_state_for(key)
         res = {}
         for group in self.param_groups:
             for n, p in zip(group['param_names'], group['params']):
                 state = self.state[p]
                 if group['norm'].startswith('Spectral'):
-                    s, diff_s = state['singular'], state['diff_singular']
-                    dot = torch.sum(s * diff_s, dim=-2)
-                    dot = torch.squeeze(dot, dim=-1).numpy(force=True)
+                    dot = state['singular_cosine'].numpy(force=True)
                     for index, x in np.ndenumerate(dot):
                         t = ('singular_cosine',) + tuple(str(i) for i in index) + (n,)
                         res['_'.join(t)] = x.item()
-                res['weight_cosine_' + n] = state['cosine'].item()
+                res['weight_cosine_' + n] = state['weight_cosine'].item()
         return res
 
     def init(self):
         super().init()
         for group, norm_backend, p in self.assigned_parameters():
             state = self.state[p]
-            state['diff_singular'] = state['singular'].clone()
             state['smoothness'] = torch.ones_like(state['norm']) / group['lr']
         for group in self.param_groups:
             initial_lr = group['lr'] * group['lr_multiplier']
