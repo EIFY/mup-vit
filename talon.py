@@ -189,7 +189,7 @@ class SpectralConv(Norm):
     def clip_norm(self, w, max_norm=1.0):
         d_out, d_in, _, k = w.shape
         w = w.permute(2, 3, 0, 1)
-        max_norm *= k**2 * (d_in / d_out)**0.5
+        max_norm *= k**(-2) * (d_out / d_in)**0.5
         return spectral_hardcap(w, max_norm, self.steps).permute(2, 3, 0, 1)
 
     def init(self, w, init_dtype=torch.float64):
@@ -255,7 +255,7 @@ class SpectralPatchifier(Norm):
         original_shape = w.shape
         w = w.reshape(len(w), -1)
         d_out, d_in = w.size(-2), w.size(-1)
-        max_norm *= (d_in / d_out)**0.5
+        max_norm *= (d_out / d_in)**0.5
         return spectral_hardcap(w, max_norm, self.steps).view(original_shape)
 
     def init(self, w, init_dtype=torch.float64):
@@ -378,8 +378,8 @@ class Sign(Norm):
     def clip_norm(self, w, max_norm=1.0):
         if self.normalized:
             d_out, d_in = w.shape
-            max_norm *= d_in
-        return torch.maximum(w, w.new_tensor(max_norm))
+            max_norm /= d_in
+        return torch.clamp(w, min=-max_norm, max=max_norm)
 
     def init(self, w, init_dtype=torch.float64):
         if self.zero_init:
