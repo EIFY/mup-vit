@@ -528,9 +528,8 @@ class Scion(torch.optim.Optimizer):
 
             update = norm_backend.lmo(g)
 
-            p.data.mul_(1-wd)
             state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
-
+            p.data.mul_(1-wd)
             p.data.add_(update, alpha=-lr)
 
         self.sync_params()
@@ -598,7 +597,6 @@ class Talon(Scion):
             lr = group['lr']
             momentum = group['momentum']
             beta = group['beta']
-            norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
 
             g = p.grad
             if g is None:
@@ -621,8 +619,8 @@ class Talon(Scion):
                 state['singular_cosine'] = norm_backend.singular_cosine(p.data, state['singular'], update)
             state['weight_cosine'] = F.cosine_similarity(p.data.flatten(), -update.flatten(), dim=0, eps=eps)
 
-            p.data.mul_(1-wd)
             state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
+            p.data.mul_(1-wd)
             p.data.add_(-adaptive_lr * update)
 
         self.sync_params()
