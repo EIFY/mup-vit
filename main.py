@@ -97,6 +97,9 @@ parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--final-lr-multiplier', default=0., type=float,
                     help='final LR multiplier at the end of the schedule')
+parser.add_argument('--spectral-max-norm', default=None, type=float)
+parser.add_argument('--sign-max-norm', default=None, type=float)
+parser.add_argument('--bias-max-norm', default=None, type=float)
 parser.add_argument('--corrected', action='store_true', default=False,
                     help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
 parser.add_argument('--head-corrected', action='store_true', default=False,
@@ -343,16 +346,19 @@ def main_worker(gpu, args):
             'params': patchifier[1],
             'norm': 'SpectralPatchifier',
             'corrected': args.corrected,
+            'max_norm': args.spectral_max_norm,
         }, {
             'param_names': linear[0],
             'params': linear[1],
             'norm': 'Spectral',
             'corrected': args.corrected,
+            'max_norm': args.spectral_max_norm,
         }, {
             'param_names': bias[0],
             'params': bias[1],
             'norm': 'BiasRMS',
             'corrected': args.corrected,
+            'max_norm': args.bias_max_norm,
         }, {
             'param_names': output[0],
             'params': output[1],
@@ -361,6 +367,7 @@ def main_worker(gpu, args):
             'lr': args.sign_lr,
             'weight_decay': sign_wd,
             'corrected': args.head_corrected,
+            'max_norm': args.sign_max_norm,
         }]
 
         if pre_logits:
@@ -370,6 +377,7 @@ def main_worker(gpu, args):
                 'params': pre_logits[1],
                 'norm': 'Spectral',
                 'corrected': args.head_corrected,
+                'max_norm': args.spectral_max_norm,
             })
 
         defaults = dict(lr=args.lr, momentum=1-args.beta1, weight_decay=wd)

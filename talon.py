@@ -141,6 +141,12 @@ class BiasRMS(Norm):
     def norm(self, w, v, repeat=1):
         return torch.sqrt(torch.mean(w ** 2)), v
 
+    def clip_norm(self, w, max_norm=1.0):
+        max_norm *= math.sqrt(w.size(0))
+        curr_norm = torch.linalg.vector_norm(w)
+        w.mul_(max_norm / torch.maximum(w.new_tensor(max_norm), curr_norm))
+        return w
+
     def init(self, w, init_dtype=torch.float64):
         torch.nn.init.zeros_(w)
         return torch.tensor(0.).to(w), w.new_empty((0,))
@@ -179,6 +185,12 @@ class SpectralConv(Norm):
             s = torch.linalg.vector_norm(v, dim=-2, keepdim=True)
             v /= s
         return k**2 * (d_in / d_out)**0.5 * torch.max(s), v
+
+    def clip_norm(self, w, max_norm=1.0):
+        d_out, d_in, _, k = w.shape
+        w = w.permute(2, 3, 0, 1)
+        max_norm *= k**2 * (d_in / d_out)**0.5
+        return spectral_hardcap(w, max_norm, self.steps).permute(2, 3, 0, 1)
 
     def init(self, w, init_dtype=torch.float64):
         w_fp = w.data.to(init_dtype)
@@ -238,6 +250,13 @@ class SpectralPatchifier(Norm):
             v /= s
         d_out, d_in = w.size(-2), w.size(-1)
         return (d_in / d_out)**0.5 * s, v
+
+    def clip_norm(self, w, max_norm=1.0):
+        original_shape = w.shape
+        w = w.reshape(len(w), -1)
+        d_out, d_in = w.size(-2), w.size(-1)
+        max_norm *= (d_in / d_out)**0.5
+        return spectral_hardcap(w, max_norm, self.steps).view(original_shape)
 
     def init(self, w, init_dtype=torch.float64):
         w_fp = w.data.to(init_dtype)
@@ -299,6 +318,10 @@ class Spectral(Norm):
         scale = self.scale(*w.shape[-2:])
         return s / scale, v
 
+    def clip_norm(self, w, max_norm=1.0):
+        max_norm *= self.scale(*w.shape[-2:])
+        return spectral_hardcap(w, max_norm, self.steps).contiguous()
+
     def init(self, w, init_dtype=torch.float64):
         w_fp = w.data.to(init_dtype)
         l = [range(s) for s in w_fp.shape[:-2]]
@@ -351,6 +374,12 @@ class Sign(Norm):
             d_out, d_in = w.shape
             norm *= d_in
         return norm, v
+
+    def clip_norm(self, w, max_norm=1.0):
+        if self.normalized:
+            d_out, d_in = w.shape
+            max_norm *= d_in
+        return torch.maximum(w, w.new_tensor(max_norm))
 
     def init(self, w, init_dtype=torch.float64):
         if self.zero_init:
@@ -515,7 +544,7 @@ class Scion(torch.optim.Optimizer):
         for group, norm_backend, p in self.assigned_parameters():
             lr = group['lr']
             momentum = group['momentum']
-            wd = lr * group['weight_decay']
+            max_norm = group.get('max_norm')
             g = p.grad
             if g is None:
                 continue
@@ -528,10 +557,14 @@ class Scion(torch.optim.Optimizer):
 
             update = norm_backend.lmo(g)
 
-            p.data.mul_(1-wd)
             state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
 
+            if group['weight_decay']:
+                wd = lr * group['weight_decay']
+                p.data.mul_(1-wd)
             p.data.add_(update, alpha=-lr)
+            if max_norm is not None:
+                p.data = norm_backend.clip_norm(p.data, max_norm)
 
         self.sync_params()
 
@@ -598,7 +631,7 @@ class Talon(Scion):
             lr = group['lr']
             momentum = group['momentum']
             beta = group['beta']
-            norm_backend = norm_dict[group['norm']](**group['norm_kwargs'])
+            max_norm = group.get('max_norm')
 
             g = p.grad
             if g is None:
@@ -613,17 +646,20 @@ class Talon(Scion):
             update = norm_backend.lmo(g)
 
             adaptive_lr = lr / state['smoothness']
-            wd = adaptive_lr * group['weight_decay']
-            if group['corrected']:
-                wd *= adaptive_lr
 
             if group['norm'].startswith('Spectral'):
                 state['singular_cosine'] = norm_backend.singular_cosine(p.data, state['singular'], update)
             state['weight_cosine'] = F.cosine_similarity(p.data.flatten(), -update.flatten(), dim=0, eps=eps)
 
-            p.data.mul_(1-wd)
             state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
+            if group['weight_decay']:
+                wd = adaptive_lr * group['weight_decay']
+                if group['corrected']:
+                    wd *= adaptive_lr
+                p.data.mul_(1-wd)
             p.data.add_(-adaptive_lr * update)
+            if max_norm is not None:
+                p.data = norm_backend.clip_norm(p.data, max_norm)
 
         self.sync_params()
 
@@ -652,6 +688,13 @@ class Talon(Scion):
             if group['corrected']:
                 group['weight_decay'] /= initial_lr
             group['lr'] = group.pop('lr_multiplier')
+
+
+def spectral_hardcap(w, max_norm, steps):
+    ow = PolarExpress(w, steps).to(w)
+    aw = max_norm * ow - w
+    ans = 0.5 * (max_norm * ow + w - aw.to(w) @ PolarExpress(aw, steps).mT.to(w) @ ow)
+    return ans
 
 
 # Polar Express (https://arxiv.org/abs/2505.16932) w/ eps to prevent divide-by-zero
