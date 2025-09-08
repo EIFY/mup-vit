@@ -30,7 +30,7 @@ import wandb
 
 from simple_vit import SimpleVisionTransformer
 from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
-
+from arc import Arc
 
 # "(...)/python3.10/site-packages/torch/_inductor/compile_fx.py:140: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance."
 torch.set_float32_matmul_precision('high')
@@ -289,7 +289,7 @@ def main_worker(gpu, args):
         {"params": non_wd_params, "weight_decay": 0.},
     ]
 
-    optimizer = torch.optim.AdamW(
+    optimizer = Arc(
         params,
         lr=args.lr,
         betas=(args.beta1, args.beta2)
