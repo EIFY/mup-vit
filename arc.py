@@ -24,7 +24,8 @@ class Arc(torch.optim.Optimizer):
     ):
         defaults = dict(
             lr=lr,
-            betas=betas,
+            beta1=betas[0],
+            beta2=betas[1],
             eps=eps,
             weight_decay=weight_decay,
         )
@@ -36,45 +37,49 @@ class Arc(torch.optim.Optimizer):
 
             lr = group["lr"]
             wd = group["weight_decay"] * lr
-            beta1, beta2 = group["betas"]
+            beta1 = group["beta1"]
+            beta2 = group["beta2"]
             eps = group["eps"]
 
             for p in group['params']:
                 if p.grad is None:
                     continue
-                state = self.state[p]
-                if "step" not in state:
-                    state["step"] = 0
-                state["step"] += 1
-                step = state["step"]
 
-                exp_avg = state.setdefault("exp_avg", torch.zeros_like(
-                    p, memory_format=torch.preserve_format
-                ))
-                exp_avg_sq = state.setdefault("exp_avg_sq", torch.zeros_like(
-                    p, memory_format=torch.preserve_format
-                ))
+                state = self.state[p]
+                for key, b in zip(("exp_avg", "exp_avg_sq"), (beta1, beta2)):
+                    if key not in state:
+                        state[key] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                        state[key + '_zero'] = 1.0
+                    state[key + '_zero'] *= b
+
+                exp_avg = state["exp_avg"]
+                exp_avg_sq = state["exp_avg_sq"]
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.lerp_(p.grad, 1 - beta1)
                 exp_avg_sq.mul_(beta2).addcmul_(p.grad, p.grad, value=1 - beta2)
 
-                bias_correction1 = 1 - beta1 ** step
-                bias_correction2 = 1 - beta2 ** step
+                bias_correction1 = 1 - state["exp_avg_zero"]
+                bias_correction2 = 1 - state["exp_avg_sq_zero"]
 
                 update = -lr / bias_correction1 * exp_avg / ((exp_avg_sq / bias_correction2).sqrt() + eps)
 
-                # AdamW will be just
-                # p.data.mul_(1-wd).add_(update)
-
                 p.data.mul_(1-wd)
-                w_norm = torch.linalg.vector_norm(p.data)
+                w_2 = torch.sum(p.data ** 2)
+                u_2 = torch.sum(update ** 2)
+
+                # In the rare case that the weight norm is smaller, project weight vector instead
+                if u_2 > w_2:
+                    u_2, w_2 = w_2, u_2
+
+                w_norm = w_2.sqrt()
+
+                # Just AdamW within the epsilon-ball
                 if w_norm < eps:
                     p.data.add_(update)
                 else:
-                    u_norm = torch.linalg.vector_norm(update)
                     inner = torch.sum(p.data * update)
                     target_norm = torch.abs(w_norm + inner / w_norm)
                     p.data.add_(update)
-                    new_norm = torch.linalg.vector_norm(p.data)
+                    new_norm = (w_2 + 2 * inner + u_2).sqrt()
                     p.data.mul_(target_norm / (new_norm + eps))
