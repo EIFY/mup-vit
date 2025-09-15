@@ -550,6 +550,7 @@ class Scion(torch.optim.Optimizer):
                     sign.append(norm.item())
         return math.prod(spectral) ** (1 / len(spectral)), math.fsum(bias) / len(bias), math.fsum(sign) / len(sign)
 
+    @torch.no_grad()
     def init(self):
         init_dtype = torch.float32 if torch.backends.mps.is_available() else torch.float64
         for group, norm_backend, p in self.assigned_parameters():
@@ -558,6 +559,7 @@ class Scion(torch.optim.Optimizer):
             state['norm'], state['singular'] = init_func(p, init_dtype=init_dtype)
             if group['momentum'] != 1:
                 state['momentum_buffer'] = torch.zeros_like(p)
+        self.sync_params()
 
 
 class Talon(Scion):
