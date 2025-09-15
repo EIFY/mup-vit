@@ -26,7 +26,6 @@ import torchvision.models as models
 from torchvision.transforms import v2
 from torch.utils.data import Subset
 
-import schedulefree
 import wandb
 
 from simple_vit import SimpleVisionTransformer
@@ -77,8 +76,6 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
-parser.add_argument('--schedule-free', action='store_true',
-                    help='Use schedule-free AdamW optimizer (https://arxiv.org/abs/2405.15682).')
 parser.add_argument("--warmup", default=10000, type=int,
                     help="Number of steps to warmup for.")
 parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
@@ -87,9 +84,6 @@ parser.add_argument('--beta1', default=0.9, type=float,
                     help='beta1 for AdamW')
 parser.add_argument('--beta2', default=0.999, type=float,
                     help='beta2 for AdamW')
-parser.add_argument('--polynomial-weighting-power', default=0.0, type=float, metavar='r',
-                    help='Use polynomial weighting in the average with power r '
-                         'for schedule-free AdamW (default 0.0)')
 parser.add_argument('--decoupled-weight-decay', default=True,
                     action=argparse.BooleanOptionalAction,
                     help='Run weight decay as it is w/o multiplying by LR. '
@@ -295,21 +289,11 @@ def main_worker(gpu, args):
         {"params": non_wd_params, "weight_decay": 0.},
     ]
 
-    if args.schedule_free:
-        optimizer = schedulefree.AdamWScheduleFree(
-            params,
-            lr=args.lr,
-            betas=(args.beta1, args.beta2),
-            warmup_steps=args.warmup,
-            r=args.polynomial_weighting_power,
-        )
-        optimizer.train()
-    else:
-        optimizer = torch.optim.AdamW(
-            params,
-            lr=args.lr,
-            betas=(args.beta1, args.beta2)
-        )
+    optimizer = torch.optim.AdamW(
+        params,
+        lr=args.lr,
+        betas=(args.beta1, args.beta2)
+    )
 
     # Data loading code
     if args.fake_data:
@@ -409,11 +393,9 @@ def main_worker(gpu, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
         multiprocessing_context='spawn', prefetch_factor=1)
 
-    if args.schedule_free:
-        scheduler = None
-    else:
+    scheduler = cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
+    if args.warmup:
         warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
-        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
 
     # optionally resume from a checkpoint
@@ -425,8 +407,7 @@ def main_worker(gpu, args):
             best_acc1 = checkpoint['best_acc1']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            if not args.schedule_free:
-                scheduler.load_state_dict(checkpoint['scheduler'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
             print("=> loaded checkpoint '{}' (step {})"
                   .format(args.resume, checkpoint['step']))
         else:
@@ -537,20 +518,14 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     "batch_time": batch_time.val,
                     "samples_per_second": samples_per_second,
                     "samples_per_second_per_gpu": samples_per_second_per_gpu,
+                    "lr": scheduler.get_last_lr()[0],
                     "l2_grads": l2_grads.item(),
                     "l2_params": math.sqrt(l2_params)
                 }
-                if scheduler:
-                    log_data["lr"] = scheduler.get_last_lr()[0]
                 wandb.log(log_data, step=step)
 
         if step % args.log_steps == 0 or step in args.specified_steps:
-            if args.schedule_free:
-                optimizer.eval()
-                acc1 = validate(val_loader, model, step, device, args)
-                optimizer.train()
-            else:
-                acc1 = validate(val_loader, model, step, device, args)
+            acc1 = validate(val_loader, model, step, device, args)
 
             # remember best acc@1 and save checkpoint
             is_best = acc1 > best_acc1
@@ -562,13 +537,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     'state_dict': original_model.state_dict(),
                     'best_acc1': best_acc1,
                     'optimizer' : optimizer.state_dict(),
+                    'scheduler' : scheduler.state_dict(),
                 }
-                if scheduler:
-                    ckpt['scheduler'] = scheduler.state_dict()
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
 
-        if scheduler:
-            scheduler.step()
+        scheduler.step()
 
 
 def validate(val_loader, model, step, device, args):
