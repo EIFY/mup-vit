@@ -28,6 +28,7 @@ from torch.utils.data import Subset
 
 import wandb
 
+from scion import Scion
 from simple_vit import SimpleVisionTransformer
 from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
 
@@ -76,20 +77,16 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
-parser.add_argument("--warmup", default=10000, type=int,
+parser.add_argument("--warmup", default=0, type=int,
                     help="Number of steps to warmup for.")
-parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--sign-lr', default=0.2, type=float,
+                    help='maximum learning rate for the output layer')
 parser.add_argument('--beta1', default=0.9, type=float,
-                    help='beta1 for AdamW')
-parser.add_argument('--beta2', default=0.999, type=float,
-                    help='beta2 for AdamW')
-parser.add_argument('--decoupled-weight-decay', default=True,
-                    action=argparse.BooleanOptionalAction,
-                    help='Run weight decay as it is w/o multiplying by LR. '
-                         'See https://fabian-sp.github.io/posts/2024/02/decoupling/')
-parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
-                    metavar='W', help='weight decay (default: 1e-4)',
+                    help='1 - momentum for Scion')
+parser.add_argument('--wd', '--weight-decay', default=0.0004, type=float,
+                    metavar='W', help='weight decay (default: 0.0004)',
                     dest='weight_decay')
 parser.add_argument('--corrected', action='store_true', default=False,
                     help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
@@ -281,33 +278,53 @@ def main_worker(gpu, args):
         device = torch.device("mps")
         model = model.to(device)
 
-    if args.decoupled_weight_decay:
-        args.weight_decay /= args.lr
+    wd = sign_wd = args.weight_decay
+    wd /= args.lr
+    sign_wd /= args.sign_lr
 
-    wd_params = []
-    non_wd_params = []
+    patchifier = []
+    linear = []
+    bias = []
     output = []
 
     for t in model.named_parameters():
         n, p = t
-        if n.endswith("heads.head.weight"):
+        if n.endswith("conv_proj.weight"):
+            patchifier.append(p)
+        elif n.endswith("heads.head.weight"):
             output.append(p)
-        elif weight_decay_param(n, p) and p.requires_grad:
-            wd_params.append(p)
-        elif not weight_decay_param(n, p) and p.requires_grad:
-            non_wd_params.append(p)
+        elif p.ndim >= 2:
+            linear.append(p)
+        else:
+            bias.append(p)
 
-    params = [
-        {"params": wd_params, "weight_decay": args.weight_decay, 'corrected': args.corrected},
-        {"params": non_wd_params, "weight_decay": 0., 'corrected': False},
-        {"params": output, "weight_decay": args.weight_decay, 'corrected': False},
-    ]
+    optim_groups = [{
+        'params': patchifier,
+        'norm': 'SpectralPatchifier',
+        'weight_decay': wd,
+        'corrected': args.corrected,
+    }, {
+        'params': linear,
+        'norm': 'Spectral',
+        'weight_decay': wd,
+        'corrected': args.corrected,
+    }, {
+        'params': bias,
+        'norm': 'BiasRMS',
+        'weight_decay': wd,
+        'corrected': args.corrected,
+    }, {
+        'params': output,
+        'norm': 'Sign',
+        'norm_kwargs': {'zero_init': True},
+        'lr': args.sign_lr,
+        'weight_decay': sign_wd,
+        'corrected': False,
+    }]
 
-    optimizer = torch.optim.AdamW(
-        params,
-        lr=args.lr,
-        betas=(args.beta1, args.beta2)
-    )
+    defaults = dict(lr=args.lr, momentum=1-args.beta1)
+    optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
+    optimizer.init()
 
     # Data loading code
     if args.fake_data:
@@ -490,8 +507,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             trt2.to(device, non_blocking=True))
     )
 
+    max_wd = args.weight_decay / args.lr
     def wd_scheduler(lr):
-        return args.weight_decay * lr / args.lr
+        return max_wd * lr / args.lr
 
     for group in optimizer.param_groups:
         if group['corrected']:
@@ -526,24 +544,28 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         if step % args.print_freq == 0:
             progress.display(step)
-            if args.wandb and is_primary(args):
+            if args.wandb:
+                if is_primary(args):
 
-                with torch.no_grad():
-                    l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
+                    with torch.no_grad():
+                        l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
 
-                samples_per_second_per_gpu = args.batch_size / batch_time.val
-                samples_per_second = samples_per_second_per_gpu * args.world_size
-                log_data = {
-                    "train/loss": step_loss,
-                    "data_time": data_time.val,
-                    "batch_time": batch_time.val,
-                    "samples_per_second": samples_per_second,
-                    "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                    "lr": scheduler.get_last_lr()[0],
-                    "l2_grads": l2_grads.item(),
-                    "l2_params": math.sqrt(l2_params)
-                }
-                wandb.log(log_data, step=step)
+                    samples_per_second_per_gpu = args.batch_size / batch_time.val
+                    samples_per_second = samples_per_second_per_gpu * args.world_size
+                    log_data = {
+                        "train/loss": step_loss,
+                        "data_time": data_time.val,
+                        "batch_time": batch_time.val,
+                        "samples_per_second": samples_per_second,
+                        "samples_per_second_per_gpu": samples_per_second_per_gpu,
+                        "lr": scheduler.get_last_lr()[0],
+                        "l2_grads": l2_grads.item(),
+                        "l2_params": math.sqrt(l2_params)
+                    }
+                    log_data['spectral_norm'], log_data['bias_norm'], log_data['sign_norm'] = optimizer.report_norms()
+                    wandb.log(log_data, step=step)
+                else:
+                    optimizer.sync_state_for('norm')
 
         if step % args.log_steps == 0 or step in args.specified_steps:
             acc1 = validate(val_loader, model, step, device, args)
@@ -561,6 +583,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     'scheduler' : scheduler.state_dict(),
                 }
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
+            else:
+                optimizer.sync_state()
+
+            optimizer.remove_unused_keys()
+            torch.cuda.empty_cache()
 
         scheduler.step()
         for group in optimizer.param_groups:
