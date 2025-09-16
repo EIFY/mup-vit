@@ -83,8 +83,10 @@ parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
-parser.add_argument('--beta1', default=0.9, type=float,
-                    help='1 - momentum for Scion')
+parser.add_argument('--start-mo', default=0.1, type=float,
+                    help='Start momentum for Scion')
+parser.add_argument('--end-mo', default=0.1, type=float,
+                    help='End momentum for Scion')
 parser.add_argument('--wd', '--weight-decay', default=0.0004, type=float,
                     metavar='W', help='weight decay (default: 0.0004)',
                     dest='weight_decay')
@@ -322,7 +324,7 @@ def main_worker(gpu, args):
         'corrected': False,
     }]
 
-    defaults = dict(lr=args.lr, momentum=1-args.beta1)
+    defaults = dict(lr=args.lr, momentum=args.start_mo)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
@@ -511,6 +513,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     def wd_scheduler(lr):
         return max_wd * lr / args.lr
 
+    def mo_scheduler(step):
+        return (step * args.end_mo + (total_steps - step) * args.start_mo) / total_steps
+
     for group in optimizer.param_groups:
         if group['corrected']:
             group['weight_decay'] = wd_scheduler(group['lr'])
@@ -591,6 +596,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         scheduler.step()
         for group in optimizer.param_groups:
+            group['momentum'] = mo_scheduler(step)
             if group['corrected']:
                 group['weight_decay'] = wd_scheduler(group['lr'])
 
