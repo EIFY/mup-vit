@@ -91,6 +91,8 @@ parser.add_argument('--decoupled-weight-decay', default=True,
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
+parser.add_argument('--corrected', action='store_true', default=False,
+                    help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
@@ -256,8 +258,6 @@ def main_worker(gpu, args):
         register=args.register,
     )
 
-    wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
-    non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
     args.total_batch_size = args.batch_size
 
     if not torch.cuda.is_available() and not torch.backends.mps.is_available():
@@ -284,9 +284,23 @@ def main_worker(gpu, args):
     if args.decoupled_weight_decay:
         args.weight_decay /= args.lr
 
+    wd_params = []
+    non_wd_params = []
+    output = []
+
+    for t in model.named_parameters():
+        n, p = t
+        if n.endswith("heads.head.weight"):
+            output.append(p)
+        elif weight_decay_param(n, p) and p.requires_grad:
+            wd_params.append(p)
+        elif not weight_decay_param(n, p) and p.requires_grad:
+            non_wd_params.append(p)
+
     params = [
-        {"params": wd_params, "weight_decay": args.weight_decay},
-        {"params": non_wd_params, "weight_decay": 0.},
+        {"params": wd_params, "weight_decay": args.weight_decay, 'corrected': args.corrected},
+        {"params": non_wd_params, "weight_decay": 0., 'corrected': False},
+        {"params": output, "weight_decay": args.weight_decay, 'corrected': False},
     ]
 
     optimizer = torch.optim.AdamW(
@@ -476,6 +490,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             trt2.to(device, non_blocking=True))
     )
 
+    def wd_scheduler(lr):
+        return args.weight_decay * lr / args.lr
+
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -542,6 +559,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
 
         scheduler.step()
+        for group in optimizer.param_groups:
+            if group['corrected']:
+                group['weight_decay'] = wd_scheduler(group['lr'])
 
 
 def validate(val_loader, model, step, device, args):
