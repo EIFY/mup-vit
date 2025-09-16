@@ -493,6 +493,10 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     def wd_scheduler(lr):
         return args.weight_decay * lr / args.lr
 
+    for group in optimizer.param_groups:
+        if group['corrected']:
+            group['weight_decay'] = wd_scheduler(group['lr'])
+
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
         data_time.update(time.time() - end)
