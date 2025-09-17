@@ -328,6 +328,13 @@ def main_worker(gpu, args):
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
+    # Note that we determine the target norm sq. based on max LR & starting momentum. This reflects
+    # the starting condition w/o warm-up but is purely hypothetical w/ warm-up (not recommended).
+    for group in optimizer.param_groups:
+        lr = group['max_lr'] = group['lr']
+        wd, mo = group['weight_decay'], group['momentum']
+        group['c_sq'] = lr * (2 - mo) / (2 * wd * mo)
+
     # Data loading code
     if args.fake_data:
         print("=> Fake data is used!")
@@ -509,16 +516,16 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             trt2.to(device, non_blocking=True))
     )
 
-    max_wd = args.weight_decay / args.lr
-    def wd_scheduler(lr):
-        return max_wd * lr / args.lr
+    def wd_scheduler(g):
+        c_sq, mo = g['c_sq'], g['momentum']
+        lr = g['lr'] if g['corrected'] else g['max_lr']
+        return lr * (2 - mo) / (2 * c_sq * mo)
 
     def mo_scheduler(step):
         return (step * args.end_mo + (total_steps - step) * args.start_mo) / total_steps
 
     for group in optimizer.param_groups:
-        if group['corrected']:
-            group['weight_decay'] = wd_scheduler(group['lr'])
+        group['weight_decay'] = wd_scheduler(group)
 
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
@@ -597,8 +604,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         scheduler.step()
         for group in optimizer.param_groups:
             group['momentum'] = mo_scheduler(step)
-            if group['corrected']:
-                group['weight_decay'] = wd_scheduler(group['lr'])
+            group['weight_decay'] = wd_scheduler(group)
 
 
 def validate(val_loader, model, step, device, args):
