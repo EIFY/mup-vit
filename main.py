@@ -87,6 +87,8 @@ parser.add_argument('--start-mo', default=0.1, type=float,
                     help='Start momentum for Scion')
 parser.add_argument('--end-mo', default=0.1, type=float,
                     help='End momentum for Scion')
+parser.add_argument("--mo-warmup", default=None, type=int,
+                    help="Number of steps to warmup momentum for. Default to total number of steps")
 parser.add_argument('--wd', '--weight-decay', default=0.0004, type=float,
                     metavar='W', help='weight decay (default: 0.0004)',
                     dest='weight_decay')
@@ -522,7 +524,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         return lr * (2 - mo) / (2 * c_sq * mo)
 
     def mo_scheduler(step):
-        return (step * args.end_mo + (total_steps - step) * args.start_mo) / total_steps
+        warm_up_steps = args.mo_warmup if args.mo_warmup is not None else total_steps
+        if step <= warm_up_steps:
+            return (step * args.end_mo + (warm_up_steps - step) * args.start_mo) / warm_up_steps
+        else:
+            return args.end_mo
 
     for group in optimizer.param_groups:
         group['weight_decay'] = wd_scheduler(group)
