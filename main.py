@@ -81,9 +81,9 @@ parser.add_argument("--warmup", default=0, type=int,
                     help="Number of steps to warmup for.")
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
 parser.add_argument('--final-lr', default=0., type=float,
-                    help='final LR at the end of cosine decay. '
-                         '--sign-lr will decay by the same ratio.')
+                    help='final LR at the end of decay. --sign-lr will decay by the same ratio.')
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--start-mo', default=0.1, type=float,
@@ -440,16 +440,20 @@ def main_worker(gpu, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
         multiprocessing_context='spawn', prefetch_factor=1)
 
-    cosine_steps = total_steps - args.warmup
+    decay_steps = total_steps - args.warmup
     final_lr_ratio = args.final_lr / args.lr
 
     def cosine_lr(step):
-        return final_lr_ratio + (1 - final_lr_ratio) / 2 * (1 + math.cos(step * math.pi / cosine_steps))
-    scheduler = cosine = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=cosine_lr)
+        return final_lr_ratio + (1 - final_lr_ratio) / 2 * (1 + math.cos(step * math.pi / decay_steps))
+
+    def linear_lr(step):
+        return (step * final_lr_ratio + (decay_steps - step)) / decay_steps
+
+    scheduler = decay = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=cosine_lr if args.decay_shape == 'cosine' else linear_lr)
 
     if args.warmup:
         warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
-        scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
+        scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, decay], [args.warmup])
 
     # optionally resume from a checkpoint
     if args.resume:
