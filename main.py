@@ -77,24 +77,14 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
-parser.add_argument("--warmup", default=0, type=int,
-                    help="Number of steps to warmup for.")
-parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.01 * 9.5, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
-parser.add_argument('--final-lr', default=0., type=float,
+parser.add_argument('--final-lr', default=0.005, type=float,
                     help='final LR at the end of decay. --sign-lr will decay by the same ratio.')
-parser.add_argument('--sign-lr', default=0.2, type=float,
+parser.add_argument('--sign-lr', default=0.2 * 9.5, type=float,
                     help='maximum learning rate for the output layer')
-parser.add_argument('--start-mo', default=0.1, type=float,
-                    help='Start momentum for Scion')
-parser.add_argument('--end-mo', default=0.1, type=float,
-                    help='Momentum at the end of warmup for Scion')
-parser.add_argument("--mo-warmup", default=None, type=int,
-                    help="Number of steps to warmup momentum for. Default to total number of steps")
-parser.add_argument('--final-mo', default=None, type=float,
-                    help='Final momentum for Scion, defaults to --end-mo.')
-parser.add_argument('--wd', '--weight-decay', default=0.0004, type=float,
+parser.add_argument('--wd', '--weight-decay', default=0.0008, type=float,
                     metavar='W', help='weight decay (default: 0.0004)',
                     dest='weight_decay')
 parser.add_argument('--corrected', action='store_true', default=False,
@@ -287,10 +277,6 @@ def main_worker(gpu, args):
         device = torch.device("mps")
         model = model.to(device)
 
-    wd = sign_wd = args.weight_decay
-    wd /= args.lr
-    sign_wd /= args.sign_lr
-
     patchifier = []
     linear = []
     bias = []
@@ -307,40 +293,36 @@ def main_worker(gpu, args):
         else:
             bias.append(p)
 
+    momentum_factor = args.lr / args.final_lr / 2
+
     optim_groups = [{
         'params': patchifier,
         'norm': 'SpectralPatchifier',
-        'weight_decay': wd,
         'corrected': args.corrected,
     }, {
         'params': linear,
         'norm': 'Spectral',
-        'weight_decay': wd,
         'corrected': args.corrected,
     }, {
         'params': bias,
         'norm': 'BiasRMS',
-        'weight_decay': wd,
         'corrected': args.corrected,
     }, {
         'params': output,
         'norm': 'Sign',
         'norm_kwargs': {'zero_init': True},
-        'lr': args.sign_lr,
-        'weight_decay': sign_wd,
+        'lr': args.sign_lr / momentum_factor,
         'corrected': False,
     }]
 
-    defaults = dict(lr=args.lr, momentum=args.start_mo)
+    defaults = dict(lr=2 * args.final_lr, momentum=1e-8)  # Placeholder momentum with absurd value
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
     # Note that we determine the target norm sq. based on max LR & starting momentum. This reflects
     # the starting condition w/o warm-up but is purely hypothetical w/ warm-up (not recommended).
     for group in optimizer.param_groups:
-        lr = group['max_lr'] = group['lr']
-        wd, mo = group['weight_decay'], group['momentum']
-        group['c_sq'] = lr * (2 - mo) / (2 * wd * mo)
+        group['c_sq'] = group['lr'] ** 2 * momentum_factor / args.weight_decay
 
     # Data loading code
     if args.fake_data:
@@ -440,21 +422,6 @@ def main_worker(gpu, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
         multiprocessing_context='spawn', prefetch_factor=1)
 
-    decay_steps = total_steps - args.warmup
-    final_lr_ratio = args.final_lr / args.lr
-
-    def cosine_lr(step):
-        return final_lr_ratio + (1 - final_lr_ratio) / 2 * (1 + math.cos(step * math.pi / decay_steps))
-
-    def linear_lr(step):
-        return (step * final_lr_ratio + (decay_steps - step)) / decay_steps
-
-    scheduler = decay = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=cosine_lr if args.decay_shape == 'cosine' else linear_lr)
-
-    if args.warmup:
-        warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
-        scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, decay], [args.warmup])
-
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
@@ -464,7 +431,6 @@ def main_worker(gpu, args):
             best_acc1 = checkpoint['best_acc1']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
             print("=> loaded checkpoint '{}' (step {})"
                   .format(args.resume, checkpoint['step']))
         else:
@@ -497,7 +463,7 @@ def main_worker(gpu, args):
         # evaluate on validation set.
         validate(val_loader, model, args.start_step, device, args)
     else:
-        train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
+        train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, device, args)
 
     if args.distributed or args.ngpus_per_node > 1:
         dist.barrier()
@@ -513,7 +479,7 @@ def infinite_loader(loader, sampler):
         epoch += 1
 
 
-def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, optimizer, scheduler, device, args):
+def train(train_loader, train_sampler, val_loader, start_step, total_steps, original_model, model, optimizer, device, args):
     batch_time = AverageMeter('Time', device, ':6.3f')
     data_time = AverageMeter('Data', device, ':6.3f')
     losses = AverageMeter('Loss', device, ':.4e')
@@ -533,20 +499,25 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             trt2.to(device, non_blocking=True))
     )
 
-    def wd_scheduler(g):
-        c_sq, mo = g['c_sq'], g['momentum']
-        lr = g['lr'] if g['corrected'] else g['max_lr']
-        return lr * (2 - mo) / (2 * c_sq * mo)
+    momentum_factor = args.lr / args.final_lr / 2
+
+    def cosine_lr(step):
+        return 0.5 + (momentum_factor - 0.5) / 2 * (1 + math.cos(step * math.pi / total_steps))
+
+    def linear_lr(step):
+        return (step * 0.5 + (total_steps - step) * momentum_factor) / total_steps
+
+    lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
 
     def mo_scheduler(step):
-        warm_up_steps = args.mo_warmup if args.mo_warmup is not None else total_steps
-        if step <= warm_up_steps:
-            return (step * args.end_mo + (warm_up_steps - step) * args.start_mo) / warm_up_steps
-        else:
-            return args.end_mo if args.final_mo is None else args.final_mo
+        ratio = lr_ratio(step)
+        # (2 - mo) / (2 * mo) = ratio ->
+        # (2 * ratio) * mo = 2 - mo ->
+        # (1 + 2 * ratio) * mo = 2
+        return 2 / (1 + 2 * ratio)
 
     for group in optimizer.param_groups:
-        group['weight_decay'] = wd_scheduler(group)
+        group['momentum'] = mo_scheduler(0)
 
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
@@ -591,7 +562,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "batch_time": batch_time.val,
                         "samples_per_second": samples_per_second,
                         "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                        "lr": scheduler.get_last_lr()[0],
+                        "lr": optimizer.param_groups[0]['lr'],
                         "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params)
                     }
@@ -613,7 +584,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     'state_dict': original_model.state_dict(),
                     'best_acc1': best_acc1,
                     'optimizer' : optimizer.state_dict(),
-                    'scheduler' : scheduler.state_dict(),
                 }
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
             else:
@@ -622,10 +592,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             optimizer.remove_unused_keys()
             torch.cuda.empty_cache()
 
-        scheduler.step()
         for group in optimizer.param_groups:
             group['momentum'] = mo_scheduler(step)
-            group['weight_decay'] = wd_scheduler(group)
 
 
 def validate(val_loader, model, step, device, args):
