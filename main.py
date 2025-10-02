@@ -84,6 +84,8 @@ parser.add_argument('--final-lr', default=0.005, type=float,
                     help='final LR at the end of decay. --sign-lr will decay by the same ratio.')
 parser.add_argument('--sign-lr', default=0.2 * 9.5, type=float,
                     help='maximum learning rate for the output layer')
+parser.add_argument("--final-decay", default=0, type=int,
+                    help="If nonzero, decay the LR to zero in the specified number of steps.")
 parser.add_argument('--wd', '--weight-decay', default=0.0008, type=float,
                     metavar='W', help='weight decay (default: 0.0004)',
                     dest='weight_decay')
@@ -322,6 +324,7 @@ def main_worker(gpu, args):
     # Note that we determine the target norm sq. based on max LR & starting momentum. This reflects
     # the starting condition w/o warm-up but is purely hypothetical w/ warm-up (not recommended).
     for group in optimizer.param_groups:
+        group['max_lr'] = group['lr']
         group['c_sq'] = group['lr'] ** 2 * momentum_factor / args.weight_decay
 
     # Data loading code
@@ -500,12 +503,13 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     )
 
     momentum_factor = args.lr / args.final_lr / 2
+    decay_steps = total_steps - args.final_decay
 
     def cosine_lr(step):
-        return 0.5 + (momentum_factor - 0.5) / 2 * (1 + math.cos(step * math.pi / total_steps))
+        return 0.5 + (momentum_factor - 0.5) / 2 * (1 + math.cos(step * math.pi / decay_steps))
 
     def linear_lr(step):
-        return (step * 0.5 + (total_steps - step) * momentum_factor) / total_steps
+        return (step * 0.5 + (decay_steps - step) * momentum_factor) / decay_steps
 
     lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
 
@@ -599,6 +603,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         for group in optimizer.param_groups:
             group['momentum'] = mo_scheduler(step)
+            if step > decay_steps:
+                group['lr'] = (total_steps - step) * group['max_lr'] / args.final_decay
 
 
 def validate(val_loader, model, step, device, args):
