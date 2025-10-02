@@ -554,6 +554,10 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     with torch.no_grad():
                         l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
 
+                    group = optimizer.param_groups[0]
+                    lr, momentum = group['lr'], group['momentum']
+                    effective_lr = (2 - momentum) / (2 * momentum) * lr
+
                     samples_per_second_per_gpu = args.batch_size / batch_time.val
                     samples_per_second = samples_per_second_per_gpu * args.world_size
                     log_data = {
@@ -562,7 +566,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "batch_time": batch_time.val,
                         "samples_per_second": samples_per_second,
                         "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                        "lr": optimizer.param_groups[0]['lr'],
+                        "lr": lr,
+                        "effective_lr": effective_lr,
                         "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params)
                     }
