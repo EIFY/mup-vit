@@ -81,11 +81,9 @@ parser.add_argument('--lr', '--learning-rate', default=0.01 * 9.5, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
 parser.add_argument('--final-lr', default=0.005, type=float,
-                    help='final LR at the end of decay. --sign-lr will decay by the same ratio.')
+                    help='LR at the end of effective LR decay. --sign-lr will decay by the same ratio.')
 parser.add_argument('--sign-lr', default=0.2 * 9.5, type=float,
                     help='maximum learning rate for the output layer')
-parser.add_argument("--final-decay", default=0, type=int,
-                    help="If nonzero, decay the LR to zero in the specified number of steps.")
 parser.add_argument('--wd', '--weight-decay', default=0.0008, type=float,
                     metavar='W', help='weight decay (default: 0.0004)',
                     dest='weight_decay')
@@ -503,25 +501,30 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     )
 
     momentum_factor = args.lr / args.final_lr / 2
-    decay_steps = total_steps - args.final_decay
 
     def cosine_lr(step):
-        return 0.5 + (momentum_factor - 0.5) / 2 * (1 + math.cos(step * math.pi / decay_steps))
+        return momentum_factor * (1 + math.cos(step * math.pi / total_steps)) / 2
 
     def linear_lr(step):
-        return (step * 0.5 + (decay_steps - step) * momentum_factor) / decay_steps
+        return (total_steps - step) * momentum_factor / total_steps
 
     lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
 
-    def mo_scheduler(step):
+    def scheduler(group, step):
         ratio = lr_ratio(step)
-        # (2 - mo) / (2 * mo) = ratio ->
-        # (2 * ratio) * mo = 2 - mo ->
-        # (1 + 2 * ratio) * mo = 2
-        return 2 / (1 + 2 * ratio)
+        if ratio >= 0.5:
+            # (2 - mo) / (2 * mo) = ratio ->
+            # (2 * ratio) * mo = 2 - mo ->
+            # (1 + 2 * ratio) * mo = 2
+            group['momentum'] = 2 / (1 + 2 * ratio)
+        else:
+            group['momentum'] = 1.0
+            # Effective LR with momentum = 1.0 (max possible) is half of the value on paper
+            ratio *= 2
+            group['lr'] = ratio * group['max_lr']
 
     for group in optimizer.param_groups:
-        group['momentum'] = mo_scheduler(0)
+        scheduler(group, 0)
 
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
@@ -602,10 +605,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             torch.cuda.empty_cache()
 
         for group in optimizer.param_groups:
-            group['momentum'] = mo_scheduler(step)
-            if step > decay_steps:
-                group['lr'] = (total_steps - step) * group['max_lr'] / args.final_decay
-
+            scheduler(group, step)
 
 def validate(val_loader, model, step, device, args):
 
