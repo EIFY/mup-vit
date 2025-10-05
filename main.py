@@ -317,7 +317,7 @@ def main_worker(gpu, args):
         'norm_kwargs': {'zero_init': True},
         'lr': args.sign_lr,
         'corrected': False,
-        'weight_decay': args.sign_weight_decay,
+        'weight_decay': args.sign_weight_decay / args.sign_lr,
         'momentum': 0.1
     }]
 
