@@ -86,10 +86,8 @@ parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--c-sq', default=1.1875, type=float,
                     help='normalized steady-state norm squared for non-sign parameters.')
-parser.add_argument('--sign-weight-decay', default=0.0008, type=float,
-                    help='sign weight decay (default: 0.0008)')
-parser.add_argument('--corrected', action=argparse.BooleanOptionalAction, default=True,
-                    help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
+parser.add_argument('--sign-weight-decay', default=0.004, type=float,
+                    help='sign weight decay (default: 0.004)')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
@@ -297,17 +295,17 @@ def main_worker(gpu, args):
     optim_groups = [{
         'params': patchifier,
         'norm': 'SpectralPatchifier',
-        'corrected': args.corrected,
+        'corrected': True,
         'c_sq': args.c_sq,
     }, {
         'params': linear,
         'norm': 'Spectral',
-        'corrected': args.corrected,
+        'corrected': True,
         'c_sq': args.c_sq,
     }, {
         'params': bias,
         'norm': 'BiasRMS',
-        'corrected': args.corrected,
+        'corrected': True,
         'c_sq': args.c_sq,
     }, {
         'params': output,
@@ -315,7 +313,7 @@ def main_worker(gpu, args):
         'norm_kwargs': {'zero_init': True},
         'lr': args.sign_lr,
         'corrected': False,
-        'weight_decay': args.sign_weight_decay / args.sign_lr,
+        'weight_decay': args.sign_weight_decay,
         'momentum': 0.1
     }]
 
