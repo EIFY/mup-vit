@@ -77,8 +77,11 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
-parser.add_argument('--lr', '--learning-rate', default=0.01 * 9.5, type=float,
+parser.add_argument('--effective-learning-rate', default=0.01 * 9.5, type=float,
+                    help='maximum effective learning rate')
+parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--max-momentum', default=0.5, type=float)
 parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
 parser.add_argument('--final-lr', default=0.005, type=float,
                     help='LR at the end of effective LR decay.')
@@ -86,8 +89,8 @@ parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--c-sq', default=1.1875, type=float,
                     help='normalized steady-state norm squared for non-sign parameters.')
-parser.add_argument('--sign-weight-decay', default=0.0008, type=float,
-                    help='sign weight decay (default: 0.0008)')
+parser.add_argument('--sign-weight-decay', default=0.004, type=float,
+                    help='sign weight decay (default: 0.004)')
 parser.add_argument('--corrected', action=argparse.BooleanOptionalAction, default=True,
                     help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
@@ -294,8 +297,6 @@ def main_worker(gpu, args):
         else:
             bias.append(p)
 
-    momentum_factor = args.lr / args.final_lr / 2
-
     optim_groups = [{
         'params': patchifier,
         'norm': 'SpectralPatchifier',
@@ -317,18 +318,19 @@ def main_worker(gpu, args):
         'norm_kwargs': {'zero_init': True},
         'lr': args.sign_lr,
         'corrected': False,
-        'weight_decay': args.sign_weight_decay / args.sign_lr,
+        'weight_decay': args.sign_weight_decay,
         'momentum': 0.1
     }]
 
-    defaults = dict(lr=2 * args.final_lr, momentum=1e-8)  # Placeholder momentum with absurd value
+    defaults = dict(lr=args.lr, momentum=1e-8)  # Placeholder momentum with absurd value
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
     # Note that we determine the target norm sq. based on max LR & starting momentum. This reflects
     # the starting condition w/o warm-up but is purely hypothetical w/ warm-up (not recommended).
     for group in optimizer.param_groups:
-        group['max_lr'] = group['lr']
+        if not group['corrected']:
+            group['max_lr'] = group['lr']
 
     # Data loading code
     if args.fake_data:
@@ -505,29 +507,26 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             trt2.to(device, non_blocking=True))
     )
 
-    momentum_factor = args.lr / args.final_lr / 2
+    def cosine_lr(step):
+        return (1 + math.cos(step * math.pi / total_steps)) / 2
 
-    def cosine_lr(step, factor=1.):
-        return factor * (1 + math.cos(step * math.pi / total_steps)) / 2
-
-    def linear_lr(step, factor=1.):
-        return (total_steps - step) * factor / total_steps
+    def linear_lr(step):
+        return (total_steps - step) / total_steps
 
     lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
 
     def scheduler(group, step):
         if not group['corrected']:
             group['lr'] = lr_ratio(step) * group['max_lr']
-        elif (ratio := lr_ratio(step, momentum_factor)) >= 0.5:
+        elif (target_lr := lr_ratio(step) * args.effective_learning_rate) >= (2 - args.max_momentum) / (2 * args.max_momentum) * group['lr']:
+            ratio = target_lr / group['lr']
             # (2 - mo) / (2 * mo) = ratio ->
             # (2 * ratio) * mo = 2 - mo ->
             # (1 + 2 * ratio) * mo = 2
             group['momentum'] = 2 / (1 + 2 * ratio)
         else:
-            group['momentum'] = 1.0
-            # Effective LR with momentum = 1.0 (max possible) is half of the value on paper
-            ratio *= 2
-            group['lr'] = ratio * group['max_lr']
+            group['momentum'] = args.max_momentum
+            group['lr'] = target_lr * 2 * args.max_momentum / (2 - args.max_momentum)
 
     for group in optimizer.param_groups:
         scheduler(group, start_step)
