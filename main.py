@@ -77,7 +77,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
-parser.add_argument('--effective-learning-rate', default=0.01 * 9.5, type=float,
+parser.add_argument('--effective-learning-rate', default=0.01 * math.sqrt((2 - 0.1) / 0.1), type=float,
                     help='maximum effective learning rate')
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
@@ -518,15 +518,15 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     def scheduler(group, step):
         if not group['corrected']:
             group['lr'] = lr_ratio(step) * group['max_lr']
-        elif (target_lr := lr_ratio(step) * args.effective_learning_rate) >= (2 - args.max_momentum) / (2 * args.max_momentum) * group['lr']:
+        elif (target_lr := lr_ratio(step) * args.effective_learning_rate) >= math.sqrt((2 - args.max_momentum) / args.max_momentum) * group['lr']:
             ratio = target_lr / group['lr']
-            # (2 - mo) / (2 * mo) = ratio ->
-            # (2 * ratio) * mo = 2 - mo ->
-            # (1 + 2 * ratio) * mo = 2
-            group['momentum'] = 2 / (1 + 2 * ratio)
+            # sqrt((2 - mo) / mo) = ratio ->
+            # ratio ** 2 * mo = 2 - mo ->
+            # (1 + ratio ** 2) * mo = 2
+            group['momentum'] = 2 / (1 + ratio ** 2)
         else:
             group['momentum'] = args.max_momentum
-            group['lr'] = target_lr * 2 * args.max_momentum / (2 - args.max_momentum)
+            group['lr'] = target_lr * math.sqrt(args.max_momentum / (2 - args.max_momentum))
 
     for group in optimizer.param_groups:
         scheduler(group, start_step)
@@ -568,7 +568,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
                     group = optimizer.param_groups[0]
                     lr, momentum = group['lr'], group['momentum']
-                    effective_lr = (2 - momentum) / momentum * lr
+                    effective_lr = math.sqrt((2 - momentum) / momentum) * lr
 
                     samples_per_second_per_gpu = args.batch_size / batch_time.val
                     samples_per_second = samples_per_second_per_gpu * args.world_size
