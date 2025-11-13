@@ -68,10 +68,6 @@ class Arc(torch.optim.Optimizer):
                 w_2 = torch.sum(p.data ** 2)
                 u_2 = torch.sum(update ** 2)
 
-                # In the rare case that the weight norm is smaller, project weight vector instead
-                if u_2 > w_2:
-                    u_2, w_2 = w_2, u_2
-
                 w_norm = w_2.sqrt()
 
                 # Just AdamW within the epsilon-ball
