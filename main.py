@@ -552,7 +552,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
                     group = optimizer.param_groups[0]
                     lr, momentum = group['lr'], group['momentum']
-                    effective_lr = (2 - momentum) / momentum * lr
+                    effective_lr = math.sqrt((2 - momentum) / momentum) * lr
 
                     samples_per_second_per_gpu = args.batch_size / batch_time.val
                     samples_per_second = samples_per_second_per_gpu * args.world_size
