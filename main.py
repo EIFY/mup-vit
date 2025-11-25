@@ -84,8 +84,10 @@ parser.add_argument('--momentum', default=0.1, type=float,
 parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
-parser.add_argument('--c-sq', default=1.1875, type=float,
-                    help='normalized steady-state norm squared for non-sign parameters.')
+parser.add_argument('--start-c-sq', default=1.1875, type=float,
+                    help='Start normalized steady-state norm squared for non-sign parameters.')
+parser.add_argument('--end-c-sq', default=1.1875, type=float,
+                    help='End normalized steady-state norm squared for non-sign parameters.')
 parser.add_argument('--sign-weight-decay', default=0.004, type=float,
                     help='sign weight decay (default: 0.004)')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
@@ -296,17 +298,17 @@ def main_worker(gpu, args):
         'params': patchifier,
         'norm': 'SpectralPatchifier',
         'corrected': True,
-        'c_sq': args.c_sq,
+        'c_sq': args.start_c_sq,
     }, {
         'params': linear,
         'norm': 'Spectral',
         'corrected': True,
-        'c_sq': args.c_sq,
+        'c_sq': args.start_c_sq,
     }, {
         'params': bias,
         'norm': 'BiasRMS',
         'corrected': True,
-        'c_sq': args.c_sq,
+        'c_sq': args.start_c_sq,
     }, {
         'params': output,
         'norm': 'Sign',
@@ -511,6 +513,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
     def scheduler(group, step):
         group['lr'] = lr_ratio(step) * group['max_lr']
+        if group['corrected']:
+            ratio = (1 + math.cos(step * math.pi / total_steps)) / 2
+            group['c_sq'] = ratio * args.start_c_sq + (1 - ratio) * args.end_c_sq
 
     for group in optimizer.param_groups:
         scheduler(group, start_step)
