@@ -91,8 +91,10 @@ parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--corrected', action='store_true')
 parser.add_argument('--wd', '--weight-decay', default=0.08, type=float)
-parser.add_argument('--c-sq', default=1.1875, type=float,
-                    help='normalized steady-state norm squared for non-sign parameters.')
+parser.add_argument('--start-c-sq', default=1.1875, type=float,
+                    help='Start normalized steady-state norm squared for non-sign parameters.')
+parser.add_argument('--end-c-sq', default=1.1875, type=float,
+                    help='End normalized steady-state norm squared for non-sign parameters.')
 parser.add_argument('--sign-weight-decay', '--sign-wd', default=0.004, type=float,
                     help='sign weight decay (default: 0.004)')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
@@ -304,19 +306,19 @@ def main_worker(gpu, args):
         'params': patchifier,
         'norm': 'SpectralPatchifier',
         'corrected': args.corrected,
-        'c_sq': args.c_sq,
+        'c_sq': args.start_c_sq,
         'weight_decay': args.wd,
     }, {
         'params': linear,
         'norm': 'Spectral',
         'corrected': args.corrected,
-        'c_sq': args.c_sq,
+        'c_sq': args.start_c_sq,
         'weight_decay': args.wd,
     }, {
         'params': bias,
         'norm': 'BiasRMS',
         'corrected': args.corrected,
-        'c_sq': args.c_sq,
+        'c_sq': args.start_c_sq,
         'weight_decay': args.wd,
     }, {
         'params': output,
@@ -522,7 +524,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     def scheduler(group, step):
         group['momentum'] = args.momentum * args.end_mo_ratio ** (step / total_steps)
         if group['corrected']:
-            group['lr'] = lr_ratio(step) * group['max_lr_eff'] / lr_factor(group['momentum'], nesterov=group['nesterov'])
+            ratio = lr_ratio(step)
+            group['lr'] = ratio * group['max_lr_eff'] / lr_factor(group['momentum'], nesterov=group['nesterov'])
+            group['c_sq'] = ratio * args.start_c_sq + (1 - ratio) * args.end_c_sq
         else:
             group['lr'] = lr_ratio(step) * group['max_lr']
 
