@@ -255,11 +255,7 @@ class SimpleVisionTransformer(nn.Module):
 
         return x
 
-    def _loss_fn(self, out: torch.Tensor, lam: float, target1: torch.Tensor, target2: torch.Tensor):
-        logprob = F.log_softmax(out, dim=1)
-        return lam * F.nll_loss(logprob, target1) + (1.0 - lam) * F.nll_loss(logprob, target2)
-
-    def forward(self, x: torch.Tensor, lam: float, target1: torch.Tensor, target2: torch.Tensor):
+    def forward(self, x: torch.Tensor, target: torch.Tensor):
         # Reshape and permute the input tensor
         x = self._process_input(x)
         if self.pos_embedding is not None:
@@ -274,5 +270,5 @@ class SimpleVisionTransformer(nn.Module):
             x = x[:, self.register:]
             x = x.mean(dim = 1)
         x = self.heads(x)
-        loss = self._loss_fn(x, lam, target1, target2)
-        return x, loss
+        loss = torch.square(x - target).mean()
+        return loss

@@ -249,6 +249,7 @@ def main_worker(gpu, args):
         num_heads=args.num_heads,
         hidden_dim=args.hidden_dim,
         mlp_dim=args.hidden_dim * 4,
+        num_classes=3,
         posemb=args.posemb,
         representation_size=args.representation_size,
         pool_type=args.pool_type,
@@ -494,7 +495,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     # switch to train mode
     model.train()
     end = time.time()
-    best_acc1 = 0
+    best_loss = math.inf
     # generator moves data to the same device as model
     gen = (
         (images, lam, target1, target2) for (img, lam, trt1, trt2) in infinite_loader(train_loader, train_sampler) for images, target1, target2 in zip(
@@ -522,9 +523,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         data_time.update(time.time() - end)
         step_loss = 0.0
 
-        for img, trt1, trt2 in chunk(args.accum_freq, device, images, target1, target2):
+        for img, in chunk(args.accum_freq, device, images):
             # compute output
-            _, loss = model(img, lam, trt1, trt2)
+            loss = model(img, img.mean(dim=(2, 3)))
 
             # record loss
             step_loss += loss.item()
@@ -575,17 +576,17 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     optimizer.sync_state_for('norm')
 
         if step % args.log_steps == 0 or step in args.specified_steps:
-            acc1 = validate(val_loader, model, step, device, args)
+            loss = validate(val_loader, model, step, device, args)
 
             # remember best acc@1 and save checkpoint
-            is_best = acc1 > best_acc1
-            best_acc1 = max(acc1, best_acc1)
+            is_best = loss < best_loss
+            best_loss = min(loss, best_loss)
 
             if is_primary(args):
                 ckpt = {
                     'step': step,
                     'state_dict': original_model.state_dict(),
-                    'best_acc1': best_acc1,
+                    'best_loss': best_loss,
                     'optimizer' : optimizer.state_dict(),
                 }
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
@@ -608,16 +609,11 @@ def validate(val_loader, model, step, device, args):
             gen = (b for images, target in loader for b in chunk(args.prefetch_factor, device, images, target))
             for i, (images, target) in enumerate(gen):
                 i = base_progress + i
-                for img, trt in chunk(args.accum_freq, device, images, target):
+                for img, in chunk(args.accum_freq, device, images):
                     # compute output
-                    output, loss = model(img, 1.0, trt, trt)
-
-                    # measure accuracy and record loss
-                    acc1, acc5 = accuracy(output, trt, topk=(1, 5))
+                    loss = model(img, img.mean(dim=(2, 3)))
+                    # record loss
                     losses.update(loss.item(), img.size(0))
-                    top1.update(acc1[0].item(), img.size(0))
-                    top5.update(acc5[0].item(), img.size(0))
-                    
                 # measure elapsed time
                 batch_time.update(time.time() - end)
                 end = time.time()
@@ -627,20 +623,15 @@ def validate(val_loader, model, step, device, args):
 
     batch_time = AverageMeter('Time', device, ':6.3f', Summary.NONE)
     losses = AverageMeter('Loss', device, ':.4e', Summary.NONE)
-    top1 = AverageMeter('Acc@1', device, ':6.2f', Summary.AVERAGE)
-    top5 = AverageMeter('Acc@5', device, ':6.2f', Summary.AVERAGE)
     progress = ProgressMeter(
         args.prefetch_factor * len(val_loader) + (args.distributed and (len(val_loader.sampler) * args.world_size < len(val_loader.dataset))),
-        [batch_time, losses, top1, top5],
+        [batch_time, losses],
         prefix='Test: ')
 
     # switch to evaluate mode
     model.eval()
 
     run_validate(val_loader)
-    if args.distributed:
-        top1.all_reduce()
-        top5.all_reduce()
 
     if args.distributed and (len(val_loader.sampler) * args.world_size < len(val_loader.dataset)):
         aux_val_dataset = Subset(val_loader.dataset,
@@ -655,12 +646,10 @@ def validate(val_loader, model, step, device, args):
     if args.wandb and is_primary(args):
         log_data = {
             'val/loss': losses.avg,
-            'val/acc@1': top1.avg,
-            'val/acc@5': top5.avg,
         }
         wandb.log(log_data, step=step)
 
-    return top1.avg
+    return losses.avg
 
 
 def save_checkpoint(state, is_best, path, filename='checkpoint.pth.tar', step=None):
