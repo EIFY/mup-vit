@@ -81,6 +81,8 @@ parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.1, type=float,
                     help='momentum for non-sign parameters')
+parser.add_argument('--cautious', action='store_true',
+                    help='Cautious weight decay (https://arxiv.org/abs/2510.12402v1)')
 parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
@@ -317,7 +319,7 @@ def main_worker(gpu, args):
         'momentum': 0.1
     }]
 
-    defaults = dict(lr=args.lr, momentum=args.momentum)
+    defaults = dict(lr=args.lr, momentum=args.momentum, cautious=args.cautious)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
