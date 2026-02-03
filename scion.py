@@ -162,8 +162,7 @@ class SpectralConv(Norm):
     def lmo(self, g):
         g = PolarExpress(g.permute(2, 3, 0, 1), steps=self.steps).permute(2, 3, 0, 1)
         d_out, d_in, k, _ = g.shape
-        g *= (d_out / d_in)**0.5 / (k ** 2)
-        return g
+        return g * g.new_tensor((d_out / d_in)**0.5 / (k ** 2))
 
     def dual_norm(self, g):
         return torch.sum(self.lmo(g) * g)
@@ -219,7 +218,7 @@ class SpectralPatchifier(Norm):
         original_shape = g.shape
         g = PolarExpress(g.reshape(len(g), -1), steps=self.steps)
         d_out, d_in = g.shape
-        g *= (d_out / d_in)**0.5
+        g = g * g.new_tensor((d_out / d_in)**0.5)
         return g.view(original_shape)
 
     def dual_norm(self, g):
@@ -282,8 +281,7 @@ class Spectral(Norm):
 
     def lmo(self, g):
         g = PolarExpress(g, steps=self.steps)
-        g *= self.scale(*g.shape[-2:])
-        return g
+        return g * g.new_tensor(self.scale(*g.shape[-2:]))
 
     def dual_norm(self, g):
         return torch.sum(self.lmo(g) * g, dim=(-2, -1), keepdim=True)
