@@ -530,7 +530,11 @@ class Scion(torch.optim.Optimizer):
             update = norm_backend.lmo(g)
 
             state['norm'], state['singular'] = norm_backend.norm(p, state['singular'], repeat=1)
-            p.data.mul_(1-wd)
+            if group['cautious']: # cautious WD
+                same_sign = (p.data * update >= 0.0).to(p.data.dtype)
+                p.data.add_(same_sign * p.data, alpha=-wd)
+            else:
+                p.data.mul_(1-wd)
             p.data.add_(update, alpha=-lr)
 
         self.sync_params()
