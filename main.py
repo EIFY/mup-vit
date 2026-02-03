@@ -145,6 +145,8 @@ parser.add_argument("--report-to", default='', type=str,
                     help="Options are ['wandb']")
 parser.add_argument("--wandb-notes", default='', type=str,
                     help="Notes if logging with wandb")
+parser.add_argument('--noise-sd', default=0., type=float,
+                    help='Standard deviation of the Gaussian noise added to the crop.')
 best_acc1 = 0
 
 
@@ -509,7 +511,10 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         for img, in chunk(args.accum_freq, device, images):
             # compute output
-            loss = model(img, img.mean(dim=(2, 3)))
+            trt = img.mean(dim=(2, 3))
+            if args.noise_sd:
+                img += args.noise_sd * torch.randn_like(img)
+            loss = model(img, trt)
 
             # record loss
             step_loss += loss.item()
