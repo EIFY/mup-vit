@@ -28,6 +28,7 @@ from torch.utils.data import Subset
 
 import wandb
 
+from adamw import AdamW
 from simple_vit import SimpleVisionTransformer
 from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
 
@@ -303,7 +304,7 @@ def main_worker(gpu, args):
         {"params": output, "weight_decay": args.weight_decay, 'corrected': False},
     ]
 
-    optimizer = torch.optim.AdamW(
+    optimizer = AdamW(
         params,
         lr=args.lr,
         betas=(args.beta1, args.beta2)
