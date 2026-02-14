@@ -32,6 +32,7 @@ class AdamW(Adam):
         capturable: bool = False,
         differentiable: bool = False,
         fused: bool | None = None,
+        cautious_weight_decay: bool = False,
     ) -> None:
         super().__init__(
             params,
@@ -46,6 +47,7 @@ class AdamW(Adam):
             differentiable=differentiable,
             fused=fused,
             decoupled_weight_decay=True,
+            cautious_weight_decay=cautious_weight_decay,
         )
 
     # Preserve decoupled_weight_decay from AdamW for backwards compatibility. The following
@@ -143,6 +145,7 @@ def adamw(
     grad_scale: Tensor | None = None,
     found_inf: Tensor | None = None,
     has_complex: bool = False,
+    cautious_weight_decay: bool = False,
     *,
     amsgrad: bool,
     beta1: float | Tensor,
@@ -178,4 +181,5 @@ def adamw(
         eps=eps,
         maximize=maximize,
         decoupled_weight_decay=True,
+        cautious_weight_decay=cautious_weight_decay,
     )

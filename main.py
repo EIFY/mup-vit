@@ -94,6 +94,8 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay')
 parser.add_argument('--corrected', action='store_true', default=False,
                     help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
+parser.add_argument('--cautious', action='store_true',
+                    help='Cautious weight decay (https://arxiv.org/abs/2510.12402v1)')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
@@ -307,7 +309,8 @@ def main_worker(gpu, args):
     optimizer = AdamW(
         params,
         lr=args.lr,
-        betas=(args.beta1, args.beta2)
+        betas=(args.beta1, args.beta2),
+        cautious_weight_decay=args.cautious,
     )
 
     # Data loading code
