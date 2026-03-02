@@ -77,12 +77,12 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
-parser.add_argument("--warmup", default=0, type=int,
-                    help="Number of steps to warmup for.")
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
+parser.add_argument('--init-mo', default=1.0, type=float,
+                    help='Initial momentum for Scion')
 parser.add_argument('--start-mo', default=0.1, type=float,
                     help='Start momentum for Scion')
 parser.add_argument('--end-mo', default=0.1, type=float,
@@ -324,7 +324,7 @@ def main_worker(gpu, args):
         'corrected': False,
     }]
 
-    defaults = dict(lr=args.lr, momentum=args.start_mo)
+    defaults = dict(lr=args.lr, momentum=args.init_mo)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
@@ -426,11 +426,6 @@ def main_worker(gpu, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
         multiprocessing_context='spawn', prefetch_factor=1)
 
-    scheduler = cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps - args.warmup)
-    if args.warmup:
-        warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: step / args.warmup)
-        scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
-
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
@@ -473,7 +468,7 @@ def main_worker(gpu, args):
         # evaluate on validation set.
         validate(val_loader, model, args.start_step, device, args)
     else:
-        train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
+        train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, None, device, args)
 
     if args.distributed or args.ngpus_per_node > 1:
         dist.barrier()
@@ -563,7 +558,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "batch_time": batch_time.val,
                         "samples_per_second": samples_per_second,
                         "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                        "lr": scheduler.get_last_lr()[0],
                         "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params)
                     }
@@ -585,7 +579,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     'state_dict': original_model.state_dict(),
                     'best_acc1': best_acc1,
                     'optimizer' : optimizer.state_dict(),
-                    'scheduler' : scheduler.state_dict(),
                 }
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
             else:
@@ -594,7 +587,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             optimizer.remove_unused_keys()
             torch.cuda.empty_cache()
 
-        scheduler.step()
         for group in optimizer.param_groups:
             group['momentum'] = mo_scheduler(step)
             if group['corrected']:
