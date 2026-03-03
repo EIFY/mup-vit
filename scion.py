@@ -513,7 +513,7 @@ class Scion(torch.optim.Optimizer):
         for group, norm_backend, p in self.assigned_parameters():
             lr = group['lr']
             momentum = group['momentum']
-            wd = lr * group['weight_decay']
+            wd = group['weight_decay']
             g = p.grad
             if g is None:
                 continue

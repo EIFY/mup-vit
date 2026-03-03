@@ -77,8 +77,8 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
-parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
-                    metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--effective-lr', default=0.04358898943540673, type=float,
+                    metavar='LR', help='effective learning rate')
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--init-mo', default=1.0, type=float,
@@ -158,6 +158,7 @@ def chunk(n, device, *tensors):
 
 def main():
     args = parser.parse_args()
+    assert args.start_mo >= args.end_mo, "Momentum must be non-increasing for this test"
 
     if not args.mlp_head:
         args.representation_size = None
@@ -196,7 +197,7 @@ def main():
         date_str = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
         args.name = '-'.join([
             date_str,
-            f"lr_{args.lr}",
+            f"effective_lr_{args.effective_lr}",
             f"b_{args.batch_size}",
         ])
 
@@ -280,10 +281,6 @@ def main_worker(gpu, args):
         device = torch.device("mps")
         model = model.to(device)
 
-    wd = sign_wd = args.weight_decay
-    wd /= args.lr
-    sign_wd /= args.sign_lr
-
     patchifier = []
     linear = []
     bias = []
@@ -303,28 +300,21 @@ def main_worker(gpu, args):
     optim_groups = [{
         'params': patchifier,
         'norm': 'SpectralPatchifier',
-        'weight_decay': wd,
-        'corrected': args.corrected,
     }, {
         'params': linear,
         'norm': 'Spectral',
-        'weight_decay': wd,
-        'corrected': args.corrected,
     }, {
         'params': bias,
         'norm': 'BiasRMS',
-        'weight_decay': wd,
-        'corrected': args.corrected,
     }, {
         'params': output,
         'norm': 'Sign',
         'norm_kwargs': {'zero_init': True},
         'lr': args.sign_lr,
-        'weight_decay': sign_wd,
         'corrected': False,
     }]
 
-    defaults = dict(lr=args.lr, momentum=args.init_mo)
+    defaults = dict(effective_lr=args.effective_lr, momentum=args.init_mo, weight_decay=args.weight_decay, corrected=True)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
@@ -504,16 +494,15 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             trt2.to(device, non_blocking=True))
     )
 
-    max_wd = args.weight_decay / args.lr
-    def wd_scheduler(lr):
-        return max_wd * lr / args.lr
+    multiple_1 = args.start_mo / args.end_mo - 1
 
     def mo_scheduler(step):
-        return (step * args.end_mo + (total_steps - step) * args.start_mo) / total_steps
+        return args.start_mo / (1 + step * multiple_1 / total_steps)
 
     for group in optimizer.param_groups:
         if group['corrected']:
-            group['weight_decay'] = wd_scheduler(group['lr'])
+            mo = group['momentum']
+            group['lr'] = group['effective_lr'] * (mo / (2 - mo)) ** 0.5
 
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
@@ -558,6 +547,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "batch_time": batch_time.val,
                         "samples_per_second": samples_per_second,
                         "samples_per_second_per_gpu": samples_per_second_per_gpu,
+                        "lr": optimizer.param_groups[0]['lr'],
+                        "effective_lr": optimizer.param_groups[0]['effective_lr'],
                         "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params)
                     }
@@ -590,7 +581,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         for group in optimizer.param_groups:
             group['momentum'] = mo_scheduler(step)
             if group['corrected']:
-                group['weight_decay'] = wd_scheduler(group['lr'])
+                mo = group['momentum']
+                group['lr'] = group['effective_lr'] * (mo / (2 - mo)) ** 0.5
 
 
 def validate(val_loader, model, step, device, args):
