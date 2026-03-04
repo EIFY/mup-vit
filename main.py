@@ -77,6 +77,8 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
+parser.add_argument('--nesterov', action='store_true', default=False,
+                    help='Use Nesterov momentum.')
 parser.add_argument('--effective-lr', default=0.04358898943540673, type=float,
                     metavar='LR', help='effective learning rate')
 parser.add_argument('--sign-lr', default=0.2, type=float,
@@ -90,8 +92,6 @@ parser.add_argument('--end-mo', default=0.1, type=float,
 parser.add_argument('--wd', '--weight-decay', default=0.0004, type=float,
                     metavar='W', help='weight decay (default: 0.0004)',
                     dest='weight_decay')
-parser.add_argument('--corrected', action='store_true', default=False,
-                    help='Use AdamC-style corrected weight decay that is proportional to lr**2.')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
@@ -314,7 +314,7 @@ def main_worker(gpu, args):
         'corrected': False,
     }]
 
-    defaults = dict(effective_lr=args.effective_lr, momentum=args.init_mo, weight_decay=args.weight_decay, corrected=True)
+    defaults = dict(effective_lr=args.effective_lr, momentum=args.init_mo, weight_decay=args.weight_decay, corrected=True, nesterov=args.nesterov)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
@@ -499,10 +499,17 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     def mo_scheduler(step):
         return args.start_mo / (1 + step * multiple_1 / total_steps)
 
+    def correct_lr(group):
+        mo = group['momentum']
+        if group['nesterov']:
+            correction = (mo * (1 + 4*mo - 6*mo**2 + 2*mo**3) / (2 - mo)) ** 0.5
+        else:
+            correction = (mo / (2 - mo)) ** 0.5
+        group['lr'] = group['effective_lr'] * correction
+
     for group in optimizer.param_groups:
         if group['corrected']:
-            mo = group['momentum']
-            group['lr'] = group['effective_lr'] * (mo / (2 - mo)) ** 0.5
+            correct_lr(group)
 
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
@@ -581,8 +588,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         for group in optimizer.param_groups:
             group['momentum'] = mo_scheduler(step)
             if group['corrected']:
-                mo = group['momentum']
-                group['lr'] = group['effective_lr'] * (mo / (2 - mo)) ** 0.5
+                correct_lr(group)
+
 
 
 def validate(val_loader, model, step, device, args):

@@ -521,7 +521,10 @@ class Scion(torch.optim.Optimizer):
 
             buf = state['momentum_buffer']
             buf.mul_(1-momentum).add_(g, alpha=momentum)
-            g = buf
+            if group['nesterov']:
+                g = buf.mul(1-momentum).add_(g, alpha=momentum)
+            else:
+                g = buf
 
             update = norm_backend.lmo(g)
 
