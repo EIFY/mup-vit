@@ -83,6 +83,8 @@ parser.add_argument('--effective-lr', default=0.04358898943540673, type=float,
                     metavar='LR', help='effective learning rate')
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
+parser.add_argument('--sign-mo', default=0.1, type=float,
+                    help='Momentum for the output layer')
 parser.add_argument('--init-mo', default=1.0, type=float,
                     help='Initial momentum for Scion')
 parser.add_argument('--start-mo', default=0.1, type=float,
@@ -586,10 +588,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             torch.cuda.empty_cache()
 
         for group in optimizer.param_groups:
-            group['momentum'] = mo_scheduler(step)
             if group['corrected']:
+                group['momentum'] = mo_scheduler(step)
                 correct_lr(group)
-
+            else:
+                group['momentum'] = args.sign_mo
 
 
 def validate(val_loader, model, step, device, args):
