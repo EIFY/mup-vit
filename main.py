@@ -79,6 +79,8 @@ parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--init-mo', default=1.0, type=float,
+                    help='Initial momentum for Scion')
 parser.add_argument('--momentum', default=0.1, type=float,
                     help='momentum for non-sign parameters')
 parser.add_argument('--cautious', action='store_true',
@@ -316,10 +318,9 @@ def main_worker(gpu, args):
         'lr': args.sign_lr,
         'corrected': False,
         'weight_decay': args.sign_weight_decay,
-        'momentum': 0.1
     }]
 
-    defaults = dict(lr=args.lr, momentum=args.momentum, cautious=args.cautious)
+    defaults = dict(lr=args.lr, momentum=args.init_mo, cautious=args.cautious)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
@@ -596,6 +597,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             torch.cuda.empty_cache()
 
         for group in optimizer.param_groups:
+            group['momentum'] = args.momentum
             scheduler(group, step)
 
 def validate(val_loader, model, step, device, args):
