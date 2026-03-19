@@ -27,12 +27,12 @@ class ScaledGELU(nn.Module):
 
 
 class MLPBlock(nn.Sequential):
-    def __init__(self, in_dim: int, mlp_dim: int, dropout: float):
+    def __init__(self, in_dim: int, mlp_dim: int, dropout: float, bias: bool):
         layers = [
-            nn.Linear(in_dim, mlp_dim),
+            nn.Linear(in_dim, mlp_dim, bias=bias),
             ScaledGELU(),
             nn.Dropout(dropout),
-            nn.Linear(mlp_dim, in_dim),
+            nn.Linear(mlp_dim, in_dim, bias=bias),
             nn.Dropout(dropout),
         ]
         super().__init__(*layers)
@@ -46,7 +46,7 @@ class MLPBlock(nn.Sequential):
 class SelfAttention(nn.Module):
     """Muon-friendly with merged QKV weights"""
 
-    def __init__(self, hidden_dim: int, num_heads: int, dropout: float = 0.0):
+    def __init__(self, hidden_dim: int, num_heads: int, dropout: float = 0.0, bias = True):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
@@ -55,7 +55,7 @@ class SelfAttention(nn.Module):
         # Follow big_vision's init
         bound = math.sqrt(3 / hidden_dim)
         self.qkv_w = nn.Parameter(torch.empty(3, hidden_dim, hidden_dim).uniform_(-bound, bound))
-        self.out = nn.Linear(hidden_dim, hidden_dim)
+        self.out = nn.Linear(hidden_dim, hidden_dim, bias=bias)
         nn.init.uniform_(self.out.weight, -bound, bound)
 
     def forward(self, x: torch.Tensor):
@@ -78,18 +78,19 @@ class EncoderBlock(nn.Module):
         dropout: float,
         attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        bias : bool = True,
     ):
         super().__init__()
         self.num_heads = num_heads
 
         # Attention block
         self.ln_1 = norm_layer(hidden_dim)
-        self.self_attention = SelfAttention(hidden_dim, num_heads, dropout=attention_dropout)
+        self.self_attention = SelfAttention(hidden_dim, num_heads, dropout=attention_dropout, bias=bias)
         self.dropout = nn.Dropout(dropout)
 
         # MLP block
         self.ln_2 = norm_layer(hidden_dim)
-        self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout)
+        self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout, bias)
 
 
     def forward(self, input: torch.Tensor):
@@ -116,6 +117,7 @@ class Encoder(nn.Module):
         dropout: float,
         attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        bias : bool = True,
     ):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
@@ -128,6 +130,7 @@ class Encoder(nn.Module):
                 dropout,
                 attention_dropout,
                 norm_layer,
+                bias,
             )
         self.layers = nn.Sequential(layers)
         self.ln = norm_layer(hidden_dim)
@@ -169,6 +172,7 @@ class SimpleVisionTransformer(nn.Module):
         pool_type: str = "gap",
         register: int = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.RMSNorm, eps=1e-6, elementwise_affine=False),
+        bias: bool = True,
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
@@ -189,7 +193,7 @@ class SimpleVisionTransformer(nn.Module):
             self.reg = self._learned_embeddings(self.register)
 
         self.conv_proj = nn.Conv2d(
-            in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
+            in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size, bias=bias
         )
 
         h = w = image_size // patch_size
@@ -209,16 +213,17 @@ class SimpleVisionTransformer(nn.Module):
             dropout,
             attention_dropout,
             norm_layer,
+            bias=bias,
         )
         self.seq_length = seq_length
 
         heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
         if representation_size is None:
-            heads_layers["head"] = nn.Linear(hidden_dim, num_classes)
+            heads_layers["head"] = nn.Linear(hidden_dim, num_classes, bias=bias)
         else:
-            heads_layers["pre_logits"] = nn.Linear(hidden_dim, representation_size)
+            heads_layers["pre_logits"] = nn.Linear(hidden_dim, representation_size, bias=bias)
             heads_layers["act"] = nn.Tanh()
-            heads_layers["head"] = nn.Linear(representation_size, num_classes)
+            heads_layers["head"] = nn.Linear(representation_size, num_classes, bias=bias)
 
         self.heads = nn.Sequential(heads_layers)
 
@@ -232,7 +237,8 @@ class SimpleVisionTransformer(nn.Module):
 
         if isinstance(self.heads.head, nn.Linear):
             nn.init.zeros_(self.heads.head.weight)
-            nn.init.zeros_(self.heads.head.bias)
+            if self.heads.head.bias is not None:
+                nn.init.zeros_(self.heads.head.bias)
 
     def _process_input(self, x: torch.Tensor) -> torch.Tensor:
         n, c, h, w = x.shape

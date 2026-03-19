@@ -552,7 +552,7 @@ class Scion(torch.optim.Optimizer):
                     bias.append(norm.item())
                 else:
                     sign.append(norm.item())
-        return math.prod(spectral) ** (1 / len(spectral)), math.fsum(bias) / len(bias), math.fsum(sign) / len(sign)
+        return math.prod(spectral) ** (1 / len(spectral)), math.fsum(bias) / len(bias) if bias else None, math.fsum(sign) / len(sign)
 
     @torch.no_grad()
     def init(self):

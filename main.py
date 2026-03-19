@@ -79,6 +79,7 @@ parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--bias', action='store_true')
 parser.add_argument('--init-mo', default=1.0, type=float,
                     help='Initial momentum for Scion')
 parser.add_argument('--momentum', default=0.1, type=float,
@@ -255,6 +256,7 @@ def main_worker(gpu, args):
         representation_size=args.representation_size,
         pool_type=args.pool_type,
         register=args.register,
+        bias=args.bias,
     )
 
     args.total_batch_size = args.batch_size
