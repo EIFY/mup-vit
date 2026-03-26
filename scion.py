@@ -98,7 +98,7 @@ class RowNorm(Norm):
     def lmo(self, g):
         if self.transpose:
             g = g.transpose(0, 1) 
-        rms_values = torch.sqrt(torch.sum(g ** 2, dim=-1, keepdim=True))
+        rms_values = torch.linalg.vector_norm(g, dim=-1, keepdim=True)
         if self.normalized:
             rms_values *= math.sqrt(g.size(-1))
         g = g / (rms_values + eps)
@@ -106,12 +106,18 @@ class RowNorm(Norm):
             g = g.transpose(0, 1) 
         return g
 
+    def norm(self, w, v, repeat=1):
+        row_norm = torch.max(torch.linalg.vector_norm(w, dim=-1))
+        if self.normalized:
+            row_norm *= math.sqrt(w.size(-1))
+        return row_norm, v
+
     def init(self, w, init_dtype=torch.float64):
         dtype = w.data.dtype
         if self.transpose:
             w.data = w.data.transpose(0, 1)
         torch.nn.init.normal_(w.data)
-        w.data /= w.norm(dim=-1, keepdim=True)
+        w.data /= torch.linalg.vector_norm(w, dim=-1, keepdim=True)
         if self.normalized:
             w.data /= math.sqrt(w.size(-1))
         w.data = w.data.to(dtype=dtype)
@@ -543,16 +549,24 @@ class Scion(torch.optim.Optimizer):
         spectral = []
         bias = []
         sign = []
+        row = []
         for group in self.param_groups:
             for p in group['params']:
                 norm = self.state[p]['norm']
                 if group['norm'].startswith('Spectral'):
                     spectral.extend(norm.flatten().tolist())
+                elif group['norm'] == 'RowNorm':
+                    row.append(norm.item())
                 elif group['norm'] == 'BiasRMS':
                     bias.append(norm.item())
                 else:
                     sign.append(norm.item())
-        return math.prod(spectral) ** (1 / len(spectral)), math.fsum(bias) / len(bias) if bias else None, math.fsum(sign) / len(sign)
+        return (
+            math.prod(spectral) ** (1 / len(spectral)),
+            math.fsum(bias) / len(bias) if bias else None,
+            math.fsum(sign) / len(sign) if sign else None,
+            math.fsum(row) / len(row) if row else None,
+        )
 
     @torch.no_grad()
     def init(self):

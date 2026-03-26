@@ -150,6 +150,22 @@ def jax_lecun_normal(layer, fan_in):
         nn.init.zeros_(layer.bias)
 
 
+eps = 1e-8
+
+
+class PotentialHead(nn.Module):
+
+    def __init__(self, hidden_dim: int, num_classes: int):
+        super().__init__()
+        self.weight = nn.parameter.Parameter(torch.empty((num_classes, hidden_dim)))
+
+    def forward(self, x: torch.Tensor):
+        x_sq = x.square().sum(-1, keepdim=True)
+        w_sq = self.weight.square().sum(-1, keepdim=True)
+        squared = x_sq - 2 * x @ self.weight.T + w_sq.T + eps
+        return torch.rsqrt(squared)
+
+
 class SimpleVisionTransformer(nn.Module):
     """Vision Transformer modified per https://arxiv.org/abs/2205.01580."""
 
@@ -168,7 +184,7 @@ class SimpleVisionTransformer(nn.Module):
         attention_dropout: float = 0.0,
         num_classes: int = 1000,
         posemb: str = "sincos2d",
-        representation_size: Optional[int] = None,
+        head: Optional[str] = None,
         pool_type: str = "gap",
         register: int = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.RMSNorm, eps=1e-6, elementwise_affine=False),
@@ -183,7 +199,6 @@ class SimpleVisionTransformer(nn.Module):
         self.attention_dropout = attention_dropout
         self.dropout = dropout
         self.num_classes = num_classes
-        self.representation_size = representation_size
         self.pool_type = pool_type
         self.norm_layer = norm_layer
         self.register = register + (pool_type == 'tok')  # [CLS] token is just another register
@@ -218,14 +233,16 @@ class SimpleVisionTransformer(nn.Module):
         self.seq_length = seq_length
 
         heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
-        if representation_size is None:
+        if head is None:
             heads_layers["head"] = nn.Linear(hidden_dim, num_classes, bias=bias)
-        else:
-            heads_layers["pre_logits"] = nn.Linear(hidden_dim, representation_size, bias=bias)
+            self.heads = nn.Sequential(heads_layers)
+        elif head == 'mlp':
+            heads_layers["pre_logits"] = nn.Linear(hidden_dim, hidden_dim, bias=bias)
             heads_layers["act"] = nn.Tanh()
-            heads_layers["head"] = nn.Linear(representation_size, num_classes, bias=bias)
-
-        self.heads = nn.Sequential(heads_layers)
+            heads_layers["head"] = nn.Linear(hidden_dim, num_classes, bias=bias)
+            self.heads = nn.Sequential(heads_layers)
+        else:
+            self.heads = PotentialHead(hidden_dim, num_classes)
 
         # Init the patchify stem
         fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1] // self.conv_proj.groups
@@ -235,7 +252,7 @@ class SimpleVisionTransformer(nn.Module):
             fan_in = self.heads.pre_logits.in_features
             jax_lecun_normal(self.heads.pre_logits, fan_in)
 
-        if isinstance(self.heads.head, nn.Linear):
+        if hasattr(self.heads, 'head') and isinstance(self.heads.head, nn.Linear):
             nn.init.zeros_(self.heads.head.weight)
             if self.heads.head.bias is not None:
                 nn.init.zeros_(self.heads.head.bias)

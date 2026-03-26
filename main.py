@@ -52,9 +52,7 @@ parser.add_argument('--num-layers', default=12, type=int, metavar='N')
 parser.add_argument('--num-heads', default=6, type=int, metavar='N')
 parser.add_argument('--posemb', default='sincos2d', type=str,
                     choices=['none', 'sincos2d', 'learn'])
-parser.add_argument('--mlp-head', action='store_true',
-                    help='Use a MLP classification head with one hidden tanh layer '
-                         'instead of a single linear layer')
+parser.add_argument('--head', default=None, type=str, choices=['mlp', 'potential'])
 parser.add_argument('--representation-size', default=None, type=int, metavar='N',
                     help='Size of the MLP classification head hidden layer, '
                          "defaults to --hidden-dim. No effect if --mlp-head isn't set")
@@ -93,6 +91,8 @@ parser.add_argument('--c-sq', default=1.1875, type=float,
                     help='normalized steady-state norm squared for non-sign parameters.')
 parser.add_argument('--sign-weight-decay', default=0.004, type=float,
                     help='sign weight decay (default: 0.004)')
+parser.add_argument('--sign-c-sq', default=475., type=float,  # (2 - 0.1) / 2 / 0.1 / 0.004 * 0.2
+                    help='normalized steady-state norm squared for the output layer')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
@@ -159,11 +159,6 @@ def chunk(n, device, *tensors):
 
 def main():
     args = parser.parse_args()
-
-    if not args.mlp_head:
-        args.representation_size = None
-    elif args.representation_size is None:
-        args.representation_size = args.hidden_dim
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -253,7 +248,7 @@ def main_worker(gpu, args):
         hidden_dim=args.hidden_dim,
         mlp_dim=args.hidden_dim * 4,
         posemb=args.posemb,
-        representation_size=args.representation_size,
+        head=args.head,
         pool_type=args.pool_type,
         register=args.register,
         bias=args.bias,
@@ -291,12 +286,31 @@ def main_worker(gpu, args):
         n, p = t
         if n.endswith("conv_proj.weight"):
             patchifier.append(p)
-        elif n.endswith("heads.head.weight"):
+        elif n.endswith("heads.head.weight") or n.endswith("heads.weight"):
             output.append(p)
         elif p.ndim >= 2:
             linear.append(p)
         else:
             bias.append(p)
+
+    if args.head == 'potential':
+        output_group = {
+            'params': output,
+            'norm': 'RowNorm',
+            'norm_kwargs': {'normalized': False},
+            'lr': args.sign_lr,
+            'corrected': True,
+            'c_sq': args.sign_c_sq,
+        }
+    else:
+        output_group = {
+            'params': output,
+            'norm': 'Sign',
+            'norm_kwargs': {'zero_init': True},
+            'lr': args.sign_lr,
+            'corrected': False,
+            'weight_decay': args.sign_weight_decay,
+        }
 
     optim_groups = [{
         'params': patchifier,
@@ -313,14 +327,7 @@ def main_worker(gpu, args):
         'norm': 'BiasRMS',
         'corrected': True,
         'c_sq': args.c_sq,
-    }, {
-        'params': output,
-        'norm': 'Sign',
-        'norm_kwargs': {'zero_init': True},
-        'lr': args.sign_lr,
-        'corrected': False,
-        'weight_decay': args.sign_weight_decay,
-    }]
+    }, output_group]
 
     defaults = dict(lr=args.lr, momentum=args.init_mo, cautious=args.cautious)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
@@ -572,7 +579,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params)
                     }
-                    log_data['spectral_norm'], log_data['bias_norm'], log_data['sign_norm'] = optimizer.report_norms()
+                    log_data['spectral_norm'], log_data['bias_norm'], log_data['sign_norm'], log_data['row_norm'] = optimizer.report_norms()
                     wandb.log(log_data, step=step)
                 else:
                     optimizer.sync_state_for('norm')
