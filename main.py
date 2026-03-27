@@ -10,6 +10,7 @@ import time
 import warnings
 from datetime import datetime
 from enum import Enum
+from functools import partial
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -52,10 +53,10 @@ parser.add_argument('--num-layers', default=12, type=int, metavar='N')
 parser.add_argument('--num-heads', default=6, type=int, metavar='N')
 parser.add_argument('--posemb', default='sincos2d', type=str,
                     choices=['none', 'sincos2d', 'learn'])
+parser.add_argument('--scaled', action='store_true')
+parser.add_argument('--norm-layer', action='store_true')
+parser.add_argument('--final-norm', action='store_true')
 parser.add_argument('--head', default=None, type=str, choices=['mlp', 'potential'])
-parser.add_argument('--representation-size', default=None, type=int, metavar='N',
-                    help='Size of the MLP classification head hidden layer, '
-                         "defaults to --hidden-dim. No effect if --mlp-head isn't set")
 parser.add_argument('--pool-type', default='gap', type=str, choices=['gap', 'tok'])
 parser.add_argument('--register', default=0, type=int, metavar='N',
                     help='Number of registers (additional tokens), see '
@@ -89,6 +90,8 @@ parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--c-sq', default=1.1875, type=float,
                     help='normalized steady-state norm squared for non-sign parameters.')
+parser.add_argument('--head-corrected', action='store_true', default=False,
+                    help='Use AdamC-style corrected weight decay for the output head')
 parser.add_argument('--sign-weight-decay', default=0.004, type=float,
                     help='sign weight decay (default: 0.004)')
 parser.add_argument('--sign-c-sq', default=475., type=float,  # (2 - 0.1) / 2 / 0.1 / 0.004 * 0.2
@@ -240,6 +243,7 @@ def main_worker(gpu, args):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
+    rmsnorm = partial(nn.RMSNorm, eps=1e-6, elementwise_affine=False)
     model = SimpleVisionTransformer(
         image_size=args.input_resolution,
         patch_size=args.patch_size,
@@ -251,7 +255,10 @@ def main_worker(gpu, args):
         head=args.head,
         pool_type=args.pool_type,
         register=args.register,
+        norm_layer=rmsnorm if args.norm_layer else nn.Identity,
         bias=args.bias,
+        final_norm=args.final_norm,
+        scaled=args.scaled,
     )
 
     args.total_batch_size = args.batch_size
@@ -295,21 +302,13 @@ def main_worker(gpu, args):
 
     if args.head == 'potential':
         output_group = {
-            'params': output,
             'norm': 'RowNorm',
             'norm_kwargs': {'normalized': False},
-            'lr': args.sign_lr,
-            'corrected': True,
-            'c_sq': args.sign_c_sq,
         }
     else:
         output_group = {
-            'params': output,
             'norm': 'Sign',
             'norm_kwargs': {'zero_init': True},
-            'lr': args.sign_lr,
-            'corrected': False,
-            'weight_decay': args.sign_weight_decay,
         }
 
     optim_groups = [{
@@ -327,7 +326,13 @@ def main_worker(gpu, args):
         'norm': 'BiasRMS',
         'corrected': True,
         'c_sq': args.c_sq,
-    }, output_group]
+    }, output_group | {
+        'params': output,
+        'lr': args.sign_lr,
+        'corrected': args.head_corrected,
+        'c_sq': args.sign_c_sq,
+        'weight_decay': args.sign_weight_decay,
+    }]
 
     defaults = dict(lr=args.lr, momentum=args.init_mo, cautious=args.cautious)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
