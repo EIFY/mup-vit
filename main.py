@@ -302,13 +302,13 @@ def main_worker(gpu, args):
 
     if args.head == 'potential':
         output_group = {
-            'norm': 'RowNorm',
-            'norm_kwargs': {'normalized': False},
+            'norm': 'ColNorm',
+            'norm_kwargs': {'transpose': True},
         }
     else:
         output_group = {
             'norm': 'Sign',
-            'norm_kwargs': {'zero_init': True},
+            'norm_kwargs': {'init_scale': 0.},
         }
 
     optim_groups = [{
@@ -584,7 +584,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params)
                     }
-                    log_data['spectral_norm'], log_data['bias_norm'], log_data['sign_norm'], log_data['row_norm'] = optimizer.report_norms()
+                    log_data['spectral_norm'], log_data['bias_norm'], log_data['sign_norm'], log_data['row_norm'], log_data['col_norm'] = optimizer.report_norms()
                     wandb.log(log_data, step=step)
                 else:
                     optimizer.sync_state_for('norm')

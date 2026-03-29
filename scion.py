@@ -42,21 +42,30 @@ class ColNorm(Norm):
         transpose (bool, optional): If True, transposes input before normalization. Use True for embedding layers
                 which store weights as (vocab_size, embedding_dim).
     """
-    def __init__(self, normalized=False, transpose=False):
+    def __init__(self, normalized=False, transpose=False, init_scale=1.0):
         self.normalized = normalized
         self.transpose = transpose
+        self.init_scale = init_scale
 
     @torch.compile
     def lmo(self, g):
         if self.transpose:
             g = g.transpose(0, 1) 
-        rms_values = 1/math.sqrt(g.size(0))*torch.sqrt(torch.sum(g ** 2, dim=0, keepdim=True))
+        rms_values = torch.linalg.vector_norm(g, dim=0, keepdim=True) / math.sqrt(g.size(0))
         if self.normalized:
             rms_values *= g.size(1)
         g = g / (rms_values + eps)
         if self.transpose:
             g = g.transpose(0, 1) 
         return g
+
+    def norm(self, w, v, repeat=1):
+        if self.transpose:
+            w = w.transpose(0, 1)
+        col_norm = torch.max(torch.linalg.vector_norm(w, dim=0)) / math.sqrt(w.size(0))
+        if self.normalized:
+            col_norm *= w.size(1)
+        return col_norm, v
 
     def init(self, w, init_dtype=torch.float64):
         dtype = w.data.dtype
@@ -65,12 +74,13 @@ class ColNorm(Norm):
         torch.nn.init.normal_(w.data)
         w.data /= w.norm(dim=0, keepdim=True)
         w.data *= math.sqrt(w.size(0))
+        w.data *= self.init_scale
         if self.normalized:
             w.data /= w.size(1)
         w.data = w.data.to(dtype=dtype)
         if self.transpose:
             w.data = w.data.transpose(0, 1)
-        return torch.tensor(1.).to(w), w.new_empty((0,))
+        return torch.tensor(self.init_scale).to(w), w.new_empty((0,))
 
     def norm_shape(self, w):
         return ()
@@ -90,9 +100,10 @@ class RowNorm(Norm):
         transpose (bool, optional): If True, transposes input before normalization. Use True for embedding layers
                 which store weights as (vocab_size, embedding_dim).
     """
-    def __init__(self, normalized=True, transpose=False):
+    def __init__(self, normalized=True, transpose=False, init_scale=1.0):
         self.normalized = normalized
         self.transpose = transpose
+        self.init_scale = init_scale
 
     @torch.compile
     def lmo(self, g):
@@ -107,6 +118,8 @@ class RowNorm(Norm):
         return g
 
     def norm(self, w, v, repeat=1):
+        if self.transpose:
+            w = w.transpose(0, 1)
         row_norm = torch.max(torch.linalg.vector_norm(w, dim=-1))
         if self.normalized:
             row_norm *= math.sqrt(w.size(-1))
@@ -118,12 +131,13 @@ class RowNorm(Norm):
             w.data = w.data.transpose(0, 1)
         torch.nn.init.normal_(w.data)
         w.data /= torch.linalg.vector_norm(w, dim=-1, keepdim=True)
+        w.data *= self.init_scale
         if self.normalized:
             w.data /= math.sqrt(w.size(-1))
         w.data = w.data.to(dtype=dtype)
         if self.transpose:
             w.data = w.data.transpose(0, 1)       
-        return torch.tensor(1.).to(w), w.new_empty((0,))
+        return torch.tensor(self.init_scale).to(w), w.new_empty((0,))
 
     def norm_shape(self, w):
         return ()
@@ -331,9 +345,9 @@ class Spectral(Norm):
 
 
 class Sign(Norm):
-    def __init__(self, zero_init=False, normalized=True):
-        self.zero_init = zero_init
+    def __init__(self, normalized=True, init_scale=1.0):
         self.normalized = normalized
+        self.init_scale = init_scale
 
     def lmo(self, g):
         lmo = torch.sign(g)
@@ -357,15 +371,13 @@ class Sign(Norm):
         return norm, v
 
     def init(self, w, init_dtype=torch.float64):
-        if self.zero_init:
-            torch.nn.init.zeros_(w)
-        else:
-            # Generate -1/fan_in or 1/fan_in uniformly at random
-            w.data = (torch.randint(0, 2, w.shape).to(w) * 2 - 1)
-            if self.normalized:
-                d_out, d_in = w.shape
-                w.data /= d_in
-        return torch.tensor(not self.zero_init).to(w), w.new_empty((0,))
+        # Generate -1/fan_in or 1/fan_in uniformly at random
+        w.data = (torch.randint(0, 2, w.shape).to(w) * 2 - 1)
+        w.data *= self.init_scale
+        if self.normalized:
+            d_out, d_in = w.shape
+            w.data /= d_in
+        return torch.tensor(self.init_scale).to(w), w.new_empty((0,))
 
     def norm_shape(self, w):
         return ()
@@ -550,6 +562,7 @@ class Scion(torch.optim.Optimizer):
         bias = []
         sign = []
         row = []
+        col = []
         for group in self.param_groups:
             for p in group['params']:
                 norm = self.state[p]['norm']
@@ -557,6 +570,8 @@ class Scion(torch.optim.Optimizer):
                     spectral.extend(norm.flatten().tolist())
                 elif group['norm'] == 'RowNorm':
                     row.append(norm.item())
+                elif group['norm'] == 'ColNorm':
+                    col.append(norm.item())
                 elif group['norm'] == 'BiasRMS':
                     bias.append(norm.item())
                 else:
@@ -566,6 +581,7 @@ class Scion(torch.optim.Optimizer):
             math.fsum(bias) / len(bias) if bias else None,
             math.fsum(sign) / len(sign) if sign else None,
             math.fsum(row) / len(row) if row else None,
+            math.fsum(col) / len(col) if col else None,
         )
 
     @torch.no_grad()

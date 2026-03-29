@@ -82,7 +82,17 @@ class EncoderBlock(nn.Module):
         scale: Optional[int] = None,
     ):
         super().__init__()
-        self.scale = scale
+        if scale is None:
+            self.a = self.b = self.c = self.d = torch.tensor(1, dtype=torch.int32)
+        else:
+            scale = torch.tensor(scale, dtype=torch.int32)
+            s = 1 / (scale + 2)
+            denom = torch.sqrt((1 - s) ** 2 + s ** 2)
+            self.a, self.b = (1 - s) / denom, s / denom
+            s = 1 / (scale + 3)
+            denom = torch.sqrt((1 - s) ** 2 + s ** 2)
+            self.c, self.d = (1 - s) / denom, s / denom
+
         self.num_heads = num_heads
 
         # Attention block
@@ -100,19 +110,10 @@ class EncoderBlock(nn.Module):
         y = self.ln_1(x)
         y = self.self_attention(y)
         y = self.dropout(y)
-        if self.scale is None:
-            x = x + y
-        else:
-            s = 1 / (self.scale + 2)
-            x = (1 - s) * x + s * y
+        x = self.a * x + self.b * y
         y = self.ln_2(x)
         y = self.mlp(y)
-        if self.scale is None:
-            return x + y
-        else:
-            s = 1 / (self.scale + 3)
-            return (1 - s) * x + s * y
-
+        return self.c * x + self.d * y
 
 class Encoder(nn.Module):
     """Transformer Model Encoder for sequence to sequence translation."""
