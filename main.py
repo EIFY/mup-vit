@@ -57,6 +57,7 @@ parser.add_argument('--scaled', action='store_true')
 parser.add_argument('--norm-layer', action='store_true')
 parser.add_argument('--final-norm', action='store_true')
 parser.add_argument('--head', default=None, type=str, choices=['mlp', 'potential'])
+parser.add_argument('--init-scale', default=0.0, type=float, help='Initialization scale of the output layer')
 parser.add_argument('--pool-type', default='gap', type=str, choices=['gap', 'tok'])
 parser.add_argument('--register', default=0, type=int, metavar='N',
                     help='Number of registers (additional tokens), see '
@@ -308,8 +309,9 @@ def main_worker(gpu, args):
     else:
         output_group = {
             'norm': 'Sign',
-            'norm_kwargs': {'init_scale': 0.},
+            'norm_kwargs': {},
         }
+    output_group['norm_kwargs']['init_scale'] = args.init_scale
 
     optim_groups = [{
         'params': patchifier,
