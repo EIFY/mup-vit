@@ -28,7 +28,7 @@ from torch.utils.data import Subset
 
 import wandb
 
-from scion import Scion
+from scion import Scion, lr_factor
 from simple_vit import SimpleVisionTransformer
 from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
 
@@ -80,10 +80,10 @@ parser.add_argument("--accum-freq", default=1, type=int,
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--bias', action='store_true')
-parser.add_argument('--init-mo', default=1.0, type=float,
-                    help='Initial momentum for Scion')
+parser.add_argument('--nesterov', action='store_true')
 parser.add_argument('--momentum', default=0.1, type=float,
                     help='momentum for non-sign parameters')
+parser.add_argument('--timescale-inv', default=0.0, type=float)
 parser.add_argument('--cautious', action='store_true',
                     help='Cautious weight decay (https://arxiv.org/abs/2510.12402v1)')
 parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
@@ -322,14 +322,15 @@ def main_worker(gpu, args):
         'weight_decay': args.sign_weight_decay,
     }]
 
-    defaults = dict(lr=args.lr, momentum=args.init_mo, cautious=args.cautious)
+    defaults = dict(lr=args.lr, momentum=args.momentum, nesterov=args.nesterov, cautious=args.cautious)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
-    # Note that we determine the target norm sq. based on max LR & starting momentum. This reflects
-    # the starting condition w/o warm-up but is purely hypothetical w/ warm-up (not recommended).
     for group in optimizer.param_groups:
-        group['max_lr'] = group['lr']
+        if group['corrected']:
+            group['max_lr_eff'] = group['lr'] * lr_factor(group['momentum'], nesterov=group['nesterov'])
+        else:
+            group['max_lr'] = group['lr']
 
     # Data loading code
     if args.fake_data:
@@ -515,10 +516,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
 
     def scheduler(group, step):
-        group['lr'] = lr_ratio(step) * group['max_lr']
-
-    for group in optimizer.param_groups:
-        scheduler(group, start_step)
+        group['momentum'] = args.momentum * (1 / (1 + step * args.timescale_inv))
+        if group['corrected']:
+            group['lr'] = lr_ratio(step) * group['max_lr_eff'] / lr_factor(group['momentum'], nesterov=group['nesterov'])
+        else:
+            group['lr'] = lr_ratio(step) * group['max_lr']
 
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
@@ -557,7 +559,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
                     group = optimizer.param_groups[0]
                     lr, momentum = group['lr'], group['momentum']
-                    effective_lr = math.sqrt((2 - momentum) / momentum) * lr
+                    effective_lr = lr * lr_factor(momentum, nesterov=group['nesterov'])
 
                     samples_per_second_per_gpu = args.batch_size / batch_time.val
                     samples_per_second = samples_per_second_per_gpu * args.world_size
@@ -576,6 +578,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     wandb.log(log_data, step=step)
                 else:
                     optimizer.sync_state_for('norm')
+
+        for group in optimizer.param_groups:
+            scheduler(group, step)
 
         if step % args.log_steps == 0 or step in args.specified_steps:
             acc1 = validate(val_loader, model, step, device, args)
@@ -598,9 +603,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             optimizer.remove_unused_keys()
             torch.cuda.empty_cache()
 
-        for group in optimizer.param_groups:
-            group['momentum'] = args.momentum
-            scheduler(group, step)
 
 def validate(val_loader, model, step, device, args):
 
