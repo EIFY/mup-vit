@@ -93,6 +93,7 @@ parser.add_argument('--c-sq', default=1.1875, type=float,
                     help='normalized steady-state norm squared for non-sign parameters.')
 parser.add_argument('--sign-weight-decay', default=0.004, type=float,
                     help='sign weight decay (default: 0.004)')
+parser.add_argument('--am-gm-reg', default=0.0, type=float)
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
 parser.add_argument('--torchvision-inception-crop', action='store_true',
@@ -522,6 +523,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         else:
             group['lr'] = lr_ratio(step) * group['max_lr']
 
+    if args.am_gm_reg:
+        am_gm_opt = torch.optim.SGD(model.parameters(), lr=args.am_gm_reg)
+
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -548,6 +552,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
+        am_gm_reg = model.am_gm_regularization()
 
         if step % args.print_freq == 0:
             progress.display(step)
@@ -573,7 +578,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "effective_lr": effective_lr,
                         "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params),
-                        "AM-GM": model.am_gm_regularization().item(),
+                        "AM-GM": am_gm_reg.item(),
                     }
                     log_data['spectral_norm'], log_data['bias_norm'], log_data['sign_norm'] = optimizer.report_norms()
                     wandb.log(log_data, step=step)
@@ -582,6 +587,12 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         for group in optimizer.param_groups:
             scheduler(group, step)
+
+        if args.am_gm_reg:
+            am_gm_reg.backward()
+            am_gm_opt.step()
+            am_gm_opt.param_groups[0]['lr'] = lr_ratio(step) * args.am_gm_reg
+            am_gm_opt.zero_grad()
 
         if step % args.log_steps == 0 or step in args.specified_steps:
             acc1 = validate(val_loader, model, step, device, args)
