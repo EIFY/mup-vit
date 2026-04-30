@@ -576,7 +576,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "lr": lr,
                         "effective_lr": effective_lr,
                         "l2_grads": l2_grads.item(),
-                        "l2_params": math.sqrt(l2_params)
+                        "l2_params": math.sqrt(l2_params),
+                        "AM-GM": model.am_gm_regularization().item(),
                     }
                     log_data['spectral_norm'], log_data['bias_norm'], log_data['sign_norm'] = optimizer.report_norms()
                     wandb.log(log_data, step=step)
