@@ -282,3 +282,21 @@ class SimpleVisionTransformer(nn.Module):
         x = self.heads(x)
         loss = self._loss_fn(x, lam, target1, target2)
         return x, loss
+
+    def am_gm_regularization(self):
+        loss = 0.
+        for n, p in self.named_parameters():
+            if p.ndim >= 2:
+                if n.endswith("heads.head.weight"):
+                    continue
+                if n.endswith("conv_proj.weight"):
+                    p = p.reshape(len(p), -1)
+                if p.size(-2) > p.size(-1):
+                    x = p.mT @ p
+                else:
+                    x = p @ p.mT
+                n = x.size(-1)
+                trace = torch.einsum('...ii->...', x)
+                logdet = x.logdet()
+                loss += torch.sum(trace / n - torch.exp(logdet / n))
+        return loss
