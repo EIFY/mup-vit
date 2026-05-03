@@ -28,7 +28,7 @@ from torch.utils.data import Subset
 
 import wandb
 
-from scion import Scion, lr_factor
+from scion import Scion
 from simple_vit import SimpleVisionTransformer
 from transforms import TwoHotMixUp, TFInceptionCrop, RandAugment17
 
@@ -328,10 +328,7 @@ def main_worker(gpu, args):
     optimizer.init()
 
     for group in optimizer.param_groups:
-        if group['corrected']:
-            group['max_lr_eff'] = group['lr'] * lr_factor(group['momentum'], nesterov=group['nesterov'])
-        else:
-            group['max_lr'] = group['lr']
+        group['max_lr'] = group['lr']
 
     # Data loading code
     if args.fake_data:
@@ -518,10 +515,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
     def scheduler(group, step):
         group['momentum'] = args.momentum * (1 / (1 + step * args.timescale_inv))
-        if group['corrected']:
-            group['lr'] = lr_ratio(step) * group['max_lr_eff'] / lr_factor(group['momentum'], nesterov=group['nesterov'])
-        else:
-            group['lr'] = lr_ratio(step) * group['max_lr']
+        group['lr'] = lr_ratio(step) * group['max_lr']
 
     if args.am_gm_reg:
         am_gm_opt = torch.optim.SGD(model.parameters(), lr=args.am_gm_reg)
@@ -564,7 +558,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
                     group = optimizer.param_groups[0]
                     lr, momentum = group['lr'], group['momentum']
-                    effective_lr = lr * lr_factor(momentum, nesterov=group['nesterov'])
 
                     samples_per_second_per_gpu = args.batch_size / batch_time.val
                     samples_per_second = samples_per_second_per_gpu * args.world_size
@@ -575,7 +568,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "samples_per_second": samples_per_second,
                         "samples_per_second_per_gpu": samples_per_second_per_gpu,
                         "lr": lr,
-                        "effective_lr": effective_lr,
                         "l2_grads": l2_grads.item(),
                         "l2_params": math.sqrt(l2_params),
                         "AM-GM": am_gm_reg.item(),

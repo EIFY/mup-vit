@@ -12,12 +12,6 @@ import numpy as np
 #######################################################
 eps = 1e-8
 
-def lr_factor(momentum, nesterov):
-    factor = math.sqrt((2 - momentum) / momentum)
-    if nesterov:
-        factor *= (1 + 4*momentum - 6*momentum**2 + 2*momentum**3) ** -0.5
-    return factor
-
 
 class Norm(object):
     def lmo(self, g):
@@ -519,11 +513,6 @@ class Scion(torch.optim.Optimizer):
         for group, norm_backend, p in self.assigned_parameters():
             lr = group['lr']
             momentum = group['momentum']
-            if group['corrected']:
-                lr_eff = lr * lr_factor(momentum, nesterov=group['nesterov'])
-                wd = lr_eff ** 2 / (2 * group['c_sq'])
-            else:
-                wd = lr * group['weight_decay']
             g = p.grad
             if g is None:
                 continue
@@ -535,6 +524,13 @@ class Scion(torch.optim.Optimizer):
                 g = buf.mul(1-momentum).add_(g, alpha=momentum)
             else:
                 g = buf
+
+            if group['corrected']:
+                correction = g.square().mean().sqrt()
+                lr *= correction
+                wd = lr ** 2 / (2 * group['c_sq'])
+            else:
+                wd = lr * group['weight_decay']
 
             update = norm_backend.lmo(g)
 
