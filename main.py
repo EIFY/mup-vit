@@ -62,7 +62,7 @@ parser.add_argument('--pool-type', default='gap', type=str, choices=['gap', 'tok
 parser.add_argument('--register', default=0, type=int, metavar='N',
                     help='Number of registers (additional tokens), see '
                          'https://arxiv.org/abs/2309.16588')
-parser.add_argument('--epochs', default=90, type=int, metavar='N',
+parser.add_argument('--epochs', '--ep', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
                     help='eval and log every N steps')
@@ -81,7 +81,7 @@ parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
 parser.add_argument('--bias', action='store_true')
 parser.add_argument('--nesterov', action='store_true')
-parser.add_argument('--momentum', default=0.1, type=float,
+parser.add_argument('--momentum', '--mo', default=0.1, type=float,
                     help='momentum for non-sign parameters')
 parser.add_argument('--timescale-inv', default=0.0, type=float)
 parser.add_argument('--cautious', action='store_true',
@@ -91,7 +91,7 @@ parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--c-sq', default=1.1875, type=float,
                     help='normalized steady-state norm squared for non-sign parameters.')
-parser.add_argument('--sign-weight-decay', default=0.004, type=float,
+parser.add_argument('--sign-weight-decay', '--sign-wd', default=0.004, type=float,
                     help='sign weight decay (default: 0.004)')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                     help="Max norm for gradient clip (default: 1.0)")
