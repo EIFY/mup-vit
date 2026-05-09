@@ -89,6 +89,8 @@ parser.add_argument('--cautious', action='store_true',
 parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
+parser.add_argument('--corrected', action='store_true')
+parser.add_argument('--wd', '--weight-decay', default=0.08, type=float)
 parser.add_argument('--c-sq', default=1.1875, type=float,
                     help='normalized steady-state norm squared for non-sign parameters.')
 parser.add_argument('--sign-weight-decay', '--sign-wd', default=0.004, type=float,
@@ -301,18 +303,21 @@ def main_worker(gpu, args):
     optim_groups = [{
         'params': patchifier,
         'norm': 'SpectralPatchifier',
-        'corrected': True,
+        'corrected': args.corrected,
         'c_sq': args.c_sq,
+        'weight_decay': args.wd,
     }, {
         'params': linear,
         'norm': 'Spectral',
-        'corrected': True,
+        'corrected': args.corrected,
         'c_sq': args.c_sq,
+        'weight_decay': args.wd,
     }, {
         'params': bias,
         'norm': 'BiasRMS',
-        'corrected': True,
+        'corrected': args.corrected,
         'c_sq': args.c_sq,
+        'weight_decay': args.wd,
     }, {
         'params': output,
         'norm': 'Sign',
