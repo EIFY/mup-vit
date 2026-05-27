@@ -6,12 +6,17 @@ len=${#scripts[@]}
 
 python script_gen.py
 
-for ((i=0; i<$len-1; i++)); do
-	curr="${scripts[i]}"
-	next="${scripts[i+1]}"
-	while [ ! -f $next ]; do
-		echo "$curr -> $next"
-		bash $curr
-		python script_gen.py
+while [ ! -f done ]; do
+	for ((i=0; i<$len-1; i++)); do
+		curr="${scripts[i]}"
+		next="${scripts[i+1]}"
+		if [ ! -f $next ]; then
+			echo "$curr -> $next"
+			bash $curr
+			rm ${scripts[*]}
+			python script_gen.py
+			break
+		fi
 	done
 done
+
