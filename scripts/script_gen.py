@@ -248,18 +248,19 @@ class AutoTuner:
 
 class LRAutoTuner(AutoTuner):
 
-    def __init__(self, key, initial_lrs, curr, f):
+    def __init__(self, key, initial_lr, factor, curr, f):
         self.key = key
-        super().__init__(initial_values=[{self.key: lr} for lr in initial_lrs], curr=curr, f=f)
+        self.factor = factor
+        super().__init__(initial_values=[{self.key: initial_lr}], curr=curr, f=f)
 
     def next_value(self):
-        nxt_lr = dict(self.values[-2])
-        nxt_lr[self.key] *= 2
+        nxt_lr = dict(self.values[-1])
+        nxt_lr[self.key] *= self.factor
         return nxt_lr, True
 
     def prev_value(self):
-        prev_lr = dict(self.values[1])
-        prev_lr[self.key] /= 2
+        prev_lr = dict(self.values[0])
+        prev_lr[self.key] /= self.factor
         return prev_lr, True
 
 
@@ -337,9 +338,7 @@ for default['corrected'] in ('', None):
 
         key = 'lr'
         initial_lr = default[key]
-        initial_lrs = [initial_lr, initial_lr * math.sqrt(2)]
-
-        tuner = LRAutoTuner(key, initial_lrs, default, f)
+        tuner = LRAutoTuner(key, initial_lr, 2 ** 0.25, default, f)
         default = tuner.run()
 
     if not default:
@@ -355,9 +354,7 @@ for default['corrected'] in ('', None):
         else:
             key = 'wd'
         initial_wd = default[key]
-        initial_wds = [initial_wd, initial_wd * math.sqrt(2)]
-
-        tuner = LRAutoTuner(key, initial_wds, default, f)
+        tuner = LRAutoTuner(key, initial_wd, 2 ** 0.25, default, f)
         default = tuner.run()
 
     if not default:
@@ -400,9 +397,7 @@ for default['corrected'] in ('', None):
 
         key = 'sign_lr'
         initial_lr = default[key]
-        initial_lrs = [initial_lr, initial_lr * math.sqrt(2)]        
-
-        tuner = LRAutoTuner(key, initial_lrs, default, f)
+        tuner = LRAutoTuner(key, initial_lr, 2 ** 0.25, default, f)
         default = tuner.run()
 
     if not default:
@@ -415,9 +410,7 @@ for default['corrected'] in ('', None):
 
         key = 'sign_wd'
         initial_wd = default[key]
-        initial_wds = [initial_wd, initial_wd * math.sqrt(2)]        
-
-        tuner = LRAutoTuner(key, initial_wds, default, f)
+        tuner = LRAutoTuner(key, initial_wd, 2 ** 0.25, default, f)
         default = tuner.run()
 
     if not default:
@@ -440,7 +433,7 @@ for default['corrected'] in ('', None):
                 mos.append(next_mo(mos[-1]))
             while len(mos) < 6:
                 mos.appendleft(prev_mo(mos[0]))
-            factors = [0.5, 2 ** -.5, 1., 2 ** .5, 2]
+            factors = [2 ** -0.5, 2**-0.25, 1., 2**0.25, 2 ** 0.5]
 
             for curr['nesterov'] in ('', None):
                 for curr['momentum'] in mos:
@@ -491,9 +484,8 @@ for default['corrected'] in ('', None):
             step = round(IMAGENET_TRAIN_SIZE * default['ep'] / BS)
             log_time_val = dict(momentum=1.0, lr=lr_eff)
             timescale_inv = (ratio - 1) / step
-            timescale_invs = [timescale_inv, timescale_inv * math.sqrt(2)]
 
-            tuner = LRAutoTuner('timescale_inv', timescale_invs, default | log_time_val, f)
+            tuner = LRAutoTuner('timescale_inv', timescale_inv, 2 ** 0.25, default | log_time_val, f)
             log_time_default = tuner.run()
 
         if not log_time_default:
@@ -560,7 +552,7 @@ git -C /home/ubuntu/Downloads/mup-vit checkout {branch}
     else:
         best['wd'] = 0.0
 
-    tuner = LRAutoTuner('am_gm_reg', [1.0, math.sqrt(2)], best, f)
+    tuner = LRAutoTuner('am_gm_reg', 1.0, 2 ** 0.25, best, f)
     best = tuner.run()
     if not best:
         sys.exit()
