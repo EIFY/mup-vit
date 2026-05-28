@@ -11,7 +11,7 @@ def read_best(p):
 
 # def make_up(curr, repeat, acc, done=True, path='logs/'):
 #     """For testing sandbox only!!!"""
-#     name = run_name('scion', curr, repeat=repeat)
+#     name = run_name('scion-t212', curr, repeat=repeat)
 #     ckpt_path = os.path.join(path, name, 'checkpoints')
 #     pathlib.Path(ckpt_path).mkdir(parents=True, exist_ok=True)
 #     best_ckpt = os.path.join(ckpt_path, 'model_best.pth.tar')
@@ -66,8 +66,8 @@ def flags(d):
                 l.append(str(v))
     return ' '.join(l)
 
-def train_command(curr, fixed, opt='scion', prefix=prefix, path = 'logs/', repeat=0):
-    name = run_name('scion', curr, repeat=repeat)
+def train_command(curr, fixed, opt='scion-t212', prefix=prefix, path = 'logs/', repeat=0):
+    name = run_name('scion-t212', curr, repeat=repeat)
     step = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
     path_name = os.path.join(path, name)
     last_ckpt = os.path.join(path_name, f'checkpoints/model_step_{step}.pth.tar')
@@ -80,11 +80,11 @@ def train_command(curr, fixed, opt='scion', prefix=prefix, path = 'logs/', repea
         curr_ckpt = os.path.join(path_name, 'checkpoints/checkpoint.pth.tar')
         return prefix + flags(curr | fixed | dict(name=name) | {'resume': curr_ckpt})
 
-def read_repeats(curr, fixed, opt='scion', prefix=prefix, path = 'logs/'):
+def read_repeats(curr, fixed, opt='scion-t212', prefix=prefix, path = 'logs/'):
     step = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
     acc, commands = [], []
     for repeat in range(N_REPEATS):
-        name = run_name('scion', curr, repeat=repeat)
+        name = run_name('scion-t212', curr, repeat=repeat)
         path_name = os.path.join(path, name)
         last_ckpt = os.path.join(path_name, f'checkpoints/model_step_{step}.pth.tar')
         if not os.path.exists(path_name):
@@ -102,7 +102,7 @@ def test_training_budgets(default, eps, f):
     curr = dict(default)
     for curr['ep'] in eps:
         for repeat in range(N_REPEATS):
-            command = train_command(curr, fixed, opt='scion', prefix=prefix, repeat=repeat)
+            command = train_command(curr, fixed, opt='scion-t212', prefix=prefix, repeat=repeat)
             done = done and command[0] == '#'
             print(command, file=f)
     return done
@@ -131,7 +131,7 @@ class AutoTuner:
 
         for val in self.initial_values:
             self.curr |= val
-            command = train_command(self.curr, fixed, opt='scion', prefix=prefix)
+            command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix)
             done = done and command[0] == '#'
             print(command, file=self.f)
 
@@ -141,7 +141,7 @@ class AutoTuner:
         if done:
             for val in self.initial_values:
                 self.curr |= val
-                acc, commands = read_repeats(self.curr, fixed, opt='scion', prefix=prefix)
+                acc, commands = read_repeats(self.curr, fixed, opt='scion-t212', prefix=prefix)
                 for command in commands:
                     done = False
                     print(command, file=self.f)
@@ -156,7 +156,7 @@ class AutoTuner:
                 if not ok:
                     break
                 self.curr |= nxt
-                acc, commands = read_repeats(self.curr, fixed, opt='scion', prefix=prefix)
+                acc, commands = read_repeats(self.curr, fixed, opt='scion-t212', prefix=prefix)
                 for command in commands:
                     done = False
                     print(command, file=self.f)
@@ -170,7 +170,7 @@ class AutoTuner:
                 if not ok:
                     break
                 self.curr |= prev
-                acc, commands = read_repeats(self.curr, fixed, opt='scion', prefix=prefix)
+                acc, commands = read_repeats(self.curr, fixed, opt='scion-t212', prefix=prefix)
                 for command in commands:
                     done = False
                     print(command, file=self.f)
@@ -193,7 +193,7 @@ class AutoTuner:
                 for val, acc in zip((self.values[-2], self.values[-1]), last2):
                     self.curr |= val
                     for repeat in range(len(acc), N_REPEATS):
-                        command = train_command(self.curr, fixed, opt='scion', prefix=prefix, repeat=repeat)
+                        command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix, repeat=repeat)
                         print(command, file=self.f)
 
         if done and (len(self.values) < 2 or pen < ult):
@@ -205,7 +205,7 @@ class AutoTuner:
                     print(file=self.f)
                 done = False
                 self.curr |= nxt
-                command = train_command(self.curr, fixed, opt='scion', prefix=prefix)
+                command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix)
                 print(command, file=self.f)
 
         if done and len(self.values) >= 2:
@@ -219,7 +219,7 @@ class AutoTuner:
                 for val, acc in zip((self.values[0], self.values[1]), first2):
                     self.curr |= val
                     for repeat in range(len(acc), N_REPEATS):
-                        command = train_command(self.curr, fixed, opt='scion', prefix=prefix, repeat=repeat)
+                        command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix, repeat=repeat)
                         print(command, file=self.f)
 
         if done and (len(self.values) < 2 or first > second):
@@ -231,7 +231,7 @@ class AutoTuner:
                     print(file=self.f)
                 done = False
                 self.curr |= prev
-                command = train_command(self.curr, fixed, opt='scion', prefix=prefix)
+                command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix)
                 print(command, file=self.f)
 
         if done:
@@ -338,7 +338,7 @@ for default['corrected'] in ('', None):
 
         key = 'lr'
         initial_lr = default[key]
-        tuner = LRAutoTuner(key, initial_lr, 2 ** 0.25, default, f)
+        tuner = LRAutoTuner(key, initial_lr, 2 ** 0.5, default, f)
         default = tuner.run()
 
     if not default:
@@ -354,7 +354,7 @@ for default['corrected'] in ('', None):
         else:
             key = 'wd'
         initial_wd = default[key]
-        tuner = LRAutoTuner(key, initial_wd, 2 ** 0.25, default, f)
+        tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
         default = tuner.run()
 
     if not default:
@@ -397,7 +397,7 @@ for default['corrected'] in ('', None):
 
         key = 'sign_lr'
         initial_lr = default[key]
-        tuner = LRAutoTuner(key, initial_lr, 2 ** 0.25, default, f)
+        tuner = LRAutoTuner(key, initial_lr, 2 ** 0.5, default, f)
         default = tuner.run()
 
     if not default:
@@ -410,7 +410,7 @@ for default['corrected'] in ('', None):
 
         key = 'sign_wd'
         initial_wd = default[key]
-        tuner = LRAutoTuner(key, initial_wd, 2 ** 0.25, default, f)
+        tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
         default = tuner.run()
 
     if not default:
@@ -433,14 +433,14 @@ for default['corrected'] in ('', None):
                 mos.append(next_mo(mos[-1]))
             while len(mos) < 6:
                 mos.appendleft(prev_mo(mos[0]))
-            factors = [2 ** -0.5, 2**-0.25, 1., 2**0.25, 2 ** 0.5]
+            factors = [0.5, 2**-0.5, 1., 2**0.5, 2.0]
 
             for curr['nesterov'] in ('', None):
                 for curr['momentum'] in mos:
                     for factor in factors:
                         base_lr = lr_eff / lr_factor(float(curr['momentum']), nesterov=curr.get('nesterov') == '')
                         curr['lr'] = factor * base_lr
-                        command = train_command(curr, fixed, opt='scion', prefix=prefix)
+                        command = train_command(curr, fixed, opt='scion-t212', prefix=prefix)
                         done = done and command[0] == '#'
                         print(command, file=f)
             if not done:
@@ -451,7 +451,7 @@ for default['corrected'] in ('', None):
                 for curr['momentum'] in mos:
                     for factor in factors:
                         curr['lr'] = lr_eff * factor / lr_factor(float(curr['momentum']), nesterov=curr.get('nesterov') == '')
-                        accuracies[curr['nesterov'], curr['momentum'], curr['lr']], _ = read_repeats(curr, fixed, opt='scion', prefix=prefix, path = 'logs/')
+                        accuracies[curr['nesterov'], curr['momentum'], curr['lr']], _ = read_repeats(curr, fixed, opt='scion-t212', prefix=prefix, path = 'logs/')
             key = max(accuracies, key=lambda k: statistics.fmean(accuracies[k]))
             avg = statistics.fmean(accuracies[key])
             default['nesterov'], default['momentum'], default['lr'] = key
@@ -485,7 +485,7 @@ for default['corrected'] in ('', None):
             log_time_val = dict(momentum=1.0, lr=lr_eff)
             timescale_inv = (ratio - 1) / step
 
-            tuner = LRAutoTuner('timescale_inv', timescale_inv, 2 ** 0.25, default | log_time_val, f)
+            tuner = LRAutoTuner('timescale_inv', timescale_inv, 2 ** 0.5, default | log_time_val, f)
             log_time_default = tuner.run()
 
         if not log_time_default:
@@ -552,7 +552,7 @@ git -C /home/ubuntu/Downloads/mup-vit checkout {branch}
     else:
         best['wd'] = 0.0
 
-    tuner = LRAutoTuner('am_gm_reg', 1.0, 2 ** 0.25, best, f)
+    tuner = LRAutoTuner('am_gm_reg', 1.0, 2 ** 0.5, best, f)
     best = tuner.run()
     if not best:
         sys.exit()
