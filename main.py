@@ -239,7 +239,7 @@ def main_worker(gpu, args):
             # global rank among all the processes
             args.rank = args.rank * args.ngpus_per_node + gpu
     if args.distributed or args.ngpus_per_node > 1:
-        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.rank)
+        torch.cuda.set_device(args.rank)
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
