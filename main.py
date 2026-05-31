@@ -443,7 +443,6 @@ def main_worker(gpu, args):
         train(train_loader, train_sampler, val_loader, args.start_step, total_steps, original_model, model, optimizer, scheduler, device, args)
 
     if args.distributed or args.ngpus_per_node > 1:
-        dist.barrier()
         dist.destroy_process_group()
 
 
