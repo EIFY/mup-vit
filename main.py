@@ -83,7 +83,7 @@ parser.add_argument('--bias', action='store_true')
 parser.add_argument('--nesterov', action='store_true')
 parser.add_argument('--momentum', '--mo', default=0.1, type=float,
                     help='momentum for non-sign parameters')
-parser.add_argument('--timescale-inv', default=0.0, type=float)
+parser.add_argument('--end-mo-ratio', default=1.0, type=float)
 parser.add_argument('--cautious', action='store_true',
                     help='Cautious weight decay (https://arxiv.org/abs/2510.12402v1)')
 parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
@@ -520,7 +520,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
 
     def scheduler(group, step):
-        group['momentum'] = args.momentum * (1 / (1 + step * args.timescale_inv))
+        group['momentum'] = args.momentum * args.end_mo_ratio ** (step / total_steps)
         if group['corrected']:
             group['lr'] = lr_ratio(step) * group['max_lr_eff'] / lr_factor(group['momentum'], nesterov=group['nesterov'])
         else:
