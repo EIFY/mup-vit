@@ -108,6 +108,30 @@ def test_training_budgets(default, eps, f):
     return done
 
 
+# Due to the naming convention AutoTuner can't distinguish beyond 3 significant digits.
+# Should be sufficient given the grid granularity.
+def almost_eq(x, y):
+    return f"{x:.3g}" == f"{y:.3g}"
+
+
+def test_training_budgets_with_mosch(default, eps, f):
+    # Interpolate / extrapolate momentum schedule instead of shrinking / stretching
+    done = True
+    curr = dict(default)
+    original_steps = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
+    original_ratio = curr.get('end_mo_ratio', 1.0)
+    max_ratio = 1 / curr['momentum']
+    for curr['ep'] in eps:
+        new_steps = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
+        new_ratio = min(original_ratio ** (new_steps / original_steps), max_ratio)
+        curr['end_mo_ratio'] = None if almost_eq(new_ratio, 1.0) else new_ratio
+        for repeat in range(N_REPEATS):
+            command = train_command(curr, fixed, opt='scion-t212', prefix=prefix, repeat=repeat)
+            done = done and command[0] == '#'
+            print(command, file=f)
+    return done
+
+
 class AutoTuner:
 
     def __init__(self, initial_values, curr, f):
@@ -315,8 +339,33 @@ class MomentumAutoTuner(AutoTuner):
         return dict(momentum=mo, lr=lr), True
 
 
+class MoschAutoTuner(AutoTuner):
+
+    def __init__(self, factor, curr, f):
+        self.key = 'end_mo_ratio'
+        self.factor = factor
+        self.max_ratio = 1 / curr['momentum']  # Doesn't make sense to have momentum > 1, right?
+        super().__init__(initial_values=[{self.key: curr.get(self.key)}], curr=curr, f=f)
+
+    def next_value(self):
+        curr_ratio = self.values[-1].get(self.key, 1.0)
+        if curr_ratio == self.max_ratio:
+            return None, False
+        next_ratio = min(curr_ratio * self.factor, self.max_ratio)
+        if almost_eq(next_ratio, 1.0):
+            next_ratio = None
+        return {self.key: next_ratio}, True
+
+    def prev_value(self):
+        curr_ratio = self.values[0].get(self.key, 1.0)
+        prev_ratio = curr_ratio / self.factor
+        if almost_eq(prev_ratio, 1.0):
+            prev_ratio = None
+        return {self.key: prev_ratio}, True
+
+
 # None is tombstone value, '' (empty string) is for store_true flags
-default = dict(corrected='', ep=90, momentum=0.1, lr=0.01, sign_lr=0.2, c_sq=1.1875, wd=None, sign_wd=0.004, am_gm_reg=None, nesterov=None, timescale_inv=None)
+default = dict(corrected='', ep=90, momentum=0.1, lr=0.01, sign_lr=0.2, c_sq=1.1875, wd=None, sign_wd=0.004, am_gm_reg=None, nesterov=None, end_mo_ratio=None)
 
 fixed = dict(workers="$N_WORKERS", multiprocessing_distributed='', batch_size="$BS", mlp_head='', torchvision_inception_crop='', grad_clip_norm=100000000., report_to='wandb', print_freq=25)
 
@@ -479,20 +528,14 @@ for default['corrected'] in ('', None):
             print(preface, file=f)
             print("# Log-time momentum tuning:", file=f)
 
-            lr_eff = default['lr'] * lr_factor(default['momentum'], nesterov=default.get('nesterov') == '')
-            ratio = 2 / default['momentum']  # Start with end momentum half of the optimal (constant) momentum 
-            step = round(IMAGENET_TRAIN_SIZE * default['ep'] / BS)
-            log_time_val = dict(momentum=1.0, lr=lr_eff)
-            timescale_inv = (ratio - 1) / step
-
-            tuner = LRAutoTuner('timescale_inv', timescale_inv, 2 ** 0.5, default | log_time_val, f)
+            tuner = MoschAutoTuner(2 ** 0.5, default, f)
             log_time_default = tuner.run()
 
         if not log_time_default:
             sys.exit()
 
         with open(file_prefix + "baseline_comparison.sh", "w") as f:
-            diff = ['momentum', 'lr', 'timescale_inv']
+            diff = ['momentum', 'lr', 'end_mo_ratio']
             baseline = {k: corrected_default[k] for k in diff}
             log_time = {k: log_time_default[k] for k in diff}
 
@@ -509,10 +552,10 @@ for default['corrected'] in ('', None):
 
             print(preface, file=f)
             print("# Log-time momentum with various training budgets:", file=f)
-            if better['timescale_inv'] is None:
+            if better['end_mo_ratio'] is None:
                 print("# Skipped. Log-time momentum is not better.", file=f)
             else:
-                done = test_training_budgets(default=better, eps=[30, 60, 90, 150, 300], f=f)
+                done = test_training_budgets_with_mosch(default=better, eps=[30, 60, 90, 150, 300], f=f)
 
         if not done:
             sys.exit()
