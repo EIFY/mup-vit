@@ -161,6 +161,7 @@ class AutoTuner:
 
         self.values = collections.deque()
         accs = collections.deque()
+        final_acc = []
 
         if done:
             for val in self.initial_values:
@@ -260,14 +261,13 @@ class AutoTuner:
 
         if done:
             avg, index = max((statistics.fmean(acc), i) for i, acc in enumerate(accs))
-            best_val = self.values[index]
-            # avg, best_val = max((statistics.fmean(acc), val) for acc, val in zip(accs, self.values))
+            best_val, final_acc = self.values[index], accs[index]
             self.curr |= best_val
             print(file=self.f)
             print(f"# {best_val=}, {avg=}", file=self.f)
             print(f"# {self.curr=}", file=self.f)
 
-        return done and self.curr
+        return self.curr, final_acc
 
 
 class LRAutoTuner(AutoTuner):
@@ -388,9 +388,9 @@ for default['corrected'] in ('', None):
         key = 'lr'
         initial_lr = default[key]
         tuner = LRAutoTuner(key, initial_lr, 2 ** 0.5, default, f)
-        default = tuner.run()
+        default, final_acc = tuner.run()
 
-    if not default:
+    if not final_acc:
         sys.exit()
 
     with open(file_prefix + "wd.sh", "w") as f:
@@ -404,9 +404,9 @@ for default['corrected'] in ('', None):
             key = 'wd'
         initial_wd = default[key]
         tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
-        default = tuner.run()
+        default, final_acc = tuner.run()
 
-    if not default:
+    if not final_acc:
         sys.exit()
 
     with open(file_prefix + "nesterov.sh", "w") as f:
@@ -421,9 +421,9 @@ for default['corrected'] in ('', None):
         initial_vals.append(new_val)
 
         tuner = AutoTuner(initial_values=initial_vals, curr=default, f=f)
-        default = tuner.run()
+        default, final_acc = tuner.run()
 
-    if not default:
+    if not final_acc:
         sys.exit()
 
     with open(file_prefix + "momentum.sh", "w") as f:
@@ -432,9 +432,9 @@ for default['corrected'] in ('', None):
         print("# Momentum tuning:", file=f)
 
         tuner = MomentumAutoTuner(default, f)
-        default = tuner.run()
+        default, final_acc = tuner.run()
 
-    if not default:        
+    if not final_acc:
         sys.exit()
 
     default['momentum'] = float(default['momentum'])  # Avoid pitfall of inter-op between Decimal & float
@@ -447,9 +447,9 @@ for default['corrected'] in ('', None):
         key = 'sign_lr'
         initial_lr = default[key]
         tuner = LRAutoTuner(key, initial_lr, 2 ** 0.5, default, f)
-        default = tuner.run()
+        default, final_acc = tuner.run()
 
-    if not default:
+    if not final_acc:
         sys.exit()
 
     with open(file_prefix + "sign_wd.sh", "w") as f:
@@ -460,9 +460,9 @@ for default['corrected'] in ('', None):
         key = 'sign_wd'
         initial_wd = default[key]
         tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
-        default = tuner.run()
+        default, final_acc = tuner.run()
 
-    if not default:
+    if not final_acc:
         sys.exit()
 
     if default.get('corrected') == '':
@@ -529,9 +529,9 @@ for default['corrected'] in ('', None):
             print("# Log-time momentum tuning:", file=f)
 
             tuner = MoschAutoTuner(2 ** 0.5, default, f)
-            log_time_default = tuner.run()
+            log_time_default, final_acc = tuner.run()
 
-        if not log_time_default:
+        if not final_acc:
             sys.exit()
 
         with open(file_prefix + "baseline_comparison.sh", "w") as f:
@@ -543,9 +543,9 @@ for default['corrected'] in ('', None):
             print("# Log-time vs. baseline:", file=f)
 
             tuner = AutoTuner(initial_values=[baseline, log_time], curr=corrected_default, f=f)
-            better = tuner.run()
+            better, final_acc = tuner.run()
 
-        if not better:
+        if not final_acc:
             sys.exit()
 
         with open(file_prefix + "log_time_training_budgets.sh", "w") as f:
@@ -588,7 +588,7 @@ git -C /home/ubuntu/Downloads/mup-vit checkout {branch}
     print("# AM-GM regularization exp.:", file=f)
 
     tuner = AutoTuner(initial_values=[default, corrected_default, log_time_default], curr={}, f=f)
-    best = tuner.run()
+    best, final_acc = tuner.run()
     best['sign_wd'] = 0.0
     if best['corrected'] == '':
         best['c_sq'] = 'inf'
@@ -596,8 +596,8 @@ git -C /home/ubuntu/Downloads/mup-vit checkout {branch}
         best['wd'] = 0.0
 
     tuner = LRAutoTuner('am_gm_reg', 1.0, 2 ** 0.5, best, f)
-    best = tuner.run()
-    if not best:
+    best, final_acc = tuner.run()
+    if not final_acc:
         sys.exit()
 
 pathlib.Path('done').touch()
