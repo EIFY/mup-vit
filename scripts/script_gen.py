@@ -66,45 +66,47 @@ def flags(d):
                 l.append(str(v))
     return ' '.join(l)
 
-def train_command(curr, fixed, opt='scion-t212', prefix=prefix, path = 'logs/', repeat=0):
-    name = run_name('scion-t212', curr, repeat=repeat)
+
+fixed = dict(workers="$N_WORKERS", multiprocessing_distributed='', batch_size="$BS", mlp_head='', torchvision_inception_crop='', grad_clip_norm=100000000., report_to='wandb', print_freq=25)
+
+
+def test_params(curr, fixed=fixed, opt='scion-t212', prefix=prefix, path='logs/', repeat=0):
+    name = run_name(opt, curr, repeat=repeat)
     step = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
     path_name = os.path.join(path, name)
     last_ckpt = os.path.join(path_name, f'checkpoints/model_step_{step}.pth.tar')
     command = prefix + flags(curr | fixed | dict(name=name))
+    accuracy = None
     if not os.path.exists(path_name):
-        return command
-    if os.path.exists(last_ckpt):
-        return '# ' + command  # Done
+        pass
+    elif os.path.exists(last_ckpt):
+        command = '# ' + command  # Done
+        accuracy = read_best(path_name)
     else:
         curr_ckpt = os.path.join(path_name, 'checkpoints/checkpoint.pth.tar')
-        return prefix + flags(curr | fixed | dict(name=name) | {'resume': curr_ckpt})
+        command = prefix + flags(curr | fixed | dict(name=name) | {'resume': curr_ckpt})
+    return command, accuracy
 
-def read_repeats(curr, fixed, opt='scion-t212', prefix=prefix, path = 'logs/'):
-    step = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
-    acc, commands = [], []
-    for repeat in range(N_REPEATS):
-        name = run_name('scion-t212', curr, repeat=repeat)
-        path_name = os.path.join(path, name)
-        last_ckpt = os.path.join(path_name, f'checkpoints/model_step_{step}.pth.tar')
-        if not os.path.exists(path_name):
-            break
-        if os.path.exists(last_ckpt):
-            acc.append(read_best(path_name))
-        else:
-            curr_ckpt = os.path.join(path_name, 'checkpoints/checkpoint.pth.tar')
-            commands.append(prefix + flags(curr | fixed | dict(name=name) | {'resume': curr_ckpt}))
-    return acc, commands
+
+def read_repeats(curr, fixed=fixed, opt='scion-t212', prefix=prefix, path='logs/', repeats=N_REPEATS):
+    commands, acc = [], []
+    for repeat in range(repeats):
+        command, accuracy = test_params(curr=curr, repeat=repeat)
+        commands.append(command)
+        acc.append(accuracy)
+    return commands, [a for a in acc if a is not None]
 
 
 def test_training_budgets(default, eps, f):
     done = True
+    commands = []
     curr = dict(default)
     for curr['ep'] in eps:
-        for repeat in range(N_REPEATS):
-            command = train_command(curr, fixed, opt='scion-t212', prefix=prefix, repeat=repeat)
-            done = done and command[0] == '#'
-            print(command, file=f)
+        cmds, acc = read_repeats(curr=curr, repeats=N_REPEATS)
+        commands.extend(cmds)
+        done = done and len(acc) == N_REPEATS
+    for command in commands:
+        print(command, file=f)
     return done
 
 
@@ -117,6 +119,7 @@ def almost_eq(x, y):
 def test_training_budgets_with_mosch(default, eps, f):
     # Interpolate / extrapolate momentum schedule instead of shrinking / stretching
     done = True
+    commands = []
     curr = dict(default)
     original_steps = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
     original_ratio = curr.get('end_mo_ratio', 1.0)
@@ -125,10 +128,11 @@ def test_training_budgets_with_mosch(default, eps, f):
         new_steps = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
         new_ratio = min(original_ratio ** (new_steps / original_steps), max_ratio)
         curr['end_mo_ratio'] = None if almost_eq(new_ratio, 1.0) else new_ratio
-        for repeat in range(N_REPEATS):
-            command = train_command(curr, fixed, opt='scion-t212', prefix=prefix, repeat=repeat)
-            done = done and command[0] == '#'
-            print(command, file=f)
+        cmds, acc = read_repeats(curr=curr, repeats=N_REPEATS)
+        commands.extend(cmds)
+        done = done and len(acc) == N_REPEATS
+    for command in commands:
+        print(command, file=f)
     return done
 
 
@@ -145,60 +149,53 @@ class AutoTuner:
     def prev_value(self):
         return None, False
 
+    def test_value(self, val):
+        to_test = self.curr | val
+        commands, acc = read_repeats(curr=to_test, repeats=N_REPEATS)
+        return val, commands[:1], acc  # Read all the accuracies but only return the command we need for sure, i.e. the first
+
     def run(self):
+        best_val, commands, final_acc = self.optimize()
+        for command in commands:
+            print(command, file=self.f)
+        return self.curr | best_val, final_acc
+
+    def optimize(self):
 
         done = True
-
-        print(file=self.f)
-        print(f"# {self.initial_values=}", file=self.f)
-        print(file=self.f)
-
-        for val in self.initial_values:
-            self.curr |= val
-            command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix)
-            done = done and command[0] == '#'
-            print(command, file=self.f)
-
+        commands = []
         self.values = collections.deque()
         accs = collections.deque()
         final_acc = []
+        best_val = {}
 
-        if done:
-            for val in self.initial_values:
-                self.curr |= val
-                acc, commands = read_repeats(self.curr, fixed, opt='scion-t212', prefix=prefix)
-                for command in commands:
-                    done = False
-                    print(command, file=self.f)
-                if acc:
-                    self.values.append(val)
-                    accs.append(acc)
-            done = done and len(self.values) == len(self.initial_values)
+        commands.append('')
+        commands.append(f"# {self.initial_values=}")
+        commands.append('')
+
+        for val in self.initial_values:
+            val, cmds, acc = self.test_value(val)
+            done = done and bool(acc)
+            self.values.append(val)
+            commands.extend(cmds)
+            accs.append(acc)
 
         if done:
             while True:
-                nxt, ok = self.next_value()
-                if not ok:
+                nxt, nxt_ok = self.next_value()
+                if not nxt_ok:
                     break
-                self.curr |= nxt
-                acc, commands = read_repeats(self.curr, fixed, opt='scion-t212', prefix=prefix)
-                for command in commands:
-                    done = False
-                    print(command, file=self.f)
+                nxt, nxt_commands, acc = self.test_value(nxt)
                 if acc:
                     self.values.append(nxt)
                     accs.append(acc)
                 else:
                     break
             while True:
-                prev, ok = self.prev_value()
-                if not ok:
+                prev, prev_ok = self.prev_value()
+                if not prev_ok:
                     break
-                self.curr |= prev
-                acc, commands = read_repeats(self.curr, fixed, opt='scion-t212', prefix=prefix)
-                for command in commands:
-                    done = False
-                    print(command, file=self.f)
+                prev, prev_commands, acc = self.test_value(prev)
                 if acc:
                     self.values.appendleft(prev)
                     accs.appendleft(acc)
@@ -211,63 +208,54 @@ class AutoTuner:
             last2 = (accs[-2], accs[-1])
             pen, ult = map(statistics.fmean, last2)
             if abs(pen - ult) < TOLERANCE and min(len(acc) for acc in last2) < N_REPEATS:
-                print(file=self.f)
-                print(f"# abs({pen} - {ult}) < {TOLERANCE}, run N={N_REPEATS}:", file=self.f)
-                print(file=self.f)
+                commands.append('')
+                commands.append(f"# abs({pen} - {ult}) < {TOLERANCE}, run N={N_REPEATS}:")
+                commands.append('')
                 done = False
                 for val, acc in zip((self.values[-2], self.values[-1]), last2):
-                    self.curr |= val
+                    to_test = self.curr | val
                     for repeat in range(len(acc), N_REPEATS):
-                        command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix, repeat=repeat)
-                        print(command, file=self.f)
+                        command, _ = test_params(curr=to_test, repeat=repeat)
+                        commands.append(command)
 
-        if done and (len(self.values) < 2 or pen < ult):
-            nxt, ok = self.next_value()
-            if ok:
-                print(file=self.f)
-                if len(self.values) >= 2:
-                    print(f"# {pen} < {ult}:", file=self.f)
-                    print(file=self.f)
-                done = False
-                self.curr |= nxt
-                command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix)
-                print(command, file=self.f)
+        if done and (len(self.values) < 2 or pen < ult) and nxt_ok:
+            commands.append('')
+            if len(self.values) >= 2:
+                commands.append(f"# {pen} < {ult}:")
+                commands.append('')
+            done = False
+            commands.extend(nxt_commands)
 
         if done and len(self.values) >= 2:
             first2 = (accs[0], accs[1])
             first, second = map(statistics.fmean, first2)
             if abs(first - second) < TOLERANCE and min(len(acc) for acc in first2) < N_REPEATS:
-                print(file=self.f)
-                print(f"# abs({first} - {second}) < {TOLERANCE}, run N={N_REPEATS}:", file=self.f)
-                print(file=self.f)
+                commands.append('')
+                commands.append(f"# abs({first} - {second}) < {TOLERANCE}, run N={N_REPEATS}:")
+                commands.append('')
                 done = False
                 for val, acc in zip((self.values[0], self.values[1]), first2):
-                    self.curr |= val
+                    to_test = self.curr | val
                     for repeat in range(len(acc), N_REPEATS):
-                        command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix, repeat=repeat)
-                        print(command, file=self.f)
+                        command, _ = test_params(curr=to_test, repeat=repeat)
+                        commands.append(command)
 
-        if done and (len(self.values) < 2 or first > second):
-            prev, ok = self.prev_value()
-            if ok:
-                print(file=self.f)
-                if len(self.values) >= 2:
-                    print(f"# {first} > {second}:", file=self.f)
-                    print(file=self.f)
-                done = False
-                self.curr |= prev
-                command = train_command(self.curr, fixed, opt='scion-t212', prefix=prefix)
-                print(command, file=self.f)
+        if done and (len(self.values) < 2 or first > second) and prev_ok:
+            commands.append('')
+            if len(self.values) >= 2:
+                commands.append(f"# {first} > {second}:")
+                commands.append('')
+            done = False
+            commands.extend(prev_commands)
 
         if done:
             avg, index = max((statistics.fmean(acc), i) for i, acc in enumerate(accs))
             best_val, final_acc = self.values[index], accs[index]
-            self.curr |= best_val
-            print(file=self.f)
-            print(f"# {best_val=}, {avg=}", file=self.f)
-            print(f"# {self.curr=}", file=self.f)
+            commands.append('')
+            commands.append(f"# {best_val=}, {avg=}")
+            commands.append(f"# {self.curr=}")
 
-        return self.curr, final_acc
+        return best_val, commands, final_acc
 
 
 class LRAutoTuner(AutoTuner):
@@ -339,16 +327,16 @@ class MomentumAutoTuner(AutoTuner):
         return dict(momentum=mo, lr=lr), True
 
 
-class MoschAutoTuner(AutoTuner):
+class EndMoRatioAutoTuner(AutoTuner):
 
     def __init__(self, factor, curr, f):
         self.key = 'end_mo_ratio'
         self.factor = factor
-        self.max_ratio = 1 / curr['momentum']  # Doesn't make sense to have momentum > 1, right?
+        self.max_ratio = 1 / float(curr['momentum'])  # Doesn't make sense to have momentum > 1, right?
         super().__init__(initial_values=[{self.key: curr.get(self.key)}], curr=curr, f=f)
 
     def next_value(self):
-        curr_ratio = self.values[-1].get(self.key, 1.0)
+        curr_ratio = self.values[-1].get(self.key) or 1.0  # end_mo_ratio = 0 never makes sense!
         if curr_ratio == self.max_ratio:
             return None, False
         next_ratio = min(curr_ratio * self.factor, self.max_ratio)
@@ -357,17 +345,51 @@ class MoschAutoTuner(AutoTuner):
         return {self.key: next_ratio}, True
 
     def prev_value(self):
-        curr_ratio = self.values[0].get(self.key, 1.0)
+        curr_ratio = self.values[0].get(self.key) or 1.0
         prev_ratio = curr_ratio / self.factor
         if almost_eq(prev_ratio, 1.0):
             prev_ratio = None
         return {self.key: prev_ratio}, True
 
 
+def copy_end_mo(curr, new_mo, key):
+    ratio = curr.get(key) or 1.0
+    end_mo = ratio * float(curr['momentum'])
+    ratio = end_mo / float(new_mo)
+    return None if almost_eq(ratio, 1.0) else ratio
+
+
+class MoschAutoTuner(MomentumAutoTuner):
+    """Nested AutoTuner for momentum schedule"""
+    def __init__(self, factor, curr, f):
+        self.key = 'end_mo_ratio'
+        self.factor = factor
+        super().__init__(curr, f)
+        # self.initial_values[0][self.key] = self.curr.get(self.key)
+
+    def test_value(self, val):
+        commands = [f"# Inner {self.key} optimization:"]
+        ratio_tuner = EndMoRatioAutoTuner(self.factor, self.curr | val, self.f)
+        best_ratio, cmds, acc = ratio_tuner.optimize()
+        val |= best_ratio
+        commands.extend(cmds)
+        return val, commands, acc  # All commoands ratio_tuner ordered are necessary.
+
+    def next_value(self):
+        nxt, ok = super().next_value()
+        if ok:
+            nxt[self.key] = copy_end_mo(self.values[-1], nxt['momentum'], self.key)
+        return nxt, ok
+
+    def prev_value(self):
+        prev, ok = super().prev_value()
+        if ok:
+            prev[self.key] = copy_end_mo(self.values[0], prev['momentum'], self.key)
+        return prev, ok
+
+
 # None is tombstone value, '' (empty string) is for store_true flags
 default = dict(corrected='', ep=90, momentum=0.1, lr=0.01, sign_lr=0.2, c_sq=1.1875, wd=None, sign_wd=0.004, am_gm_reg=None, nesterov=None, end_mo_ratio=None)
-
-fixed = dict(workers="$N_WORKERS", multiprocessing_distributed='', batch_size="$BS", mlp_head='', torchvision_inception_crop='', grad_clip_norm=100000000., report_to='wandb', print_freq=25)
 
 # old_open = open
 # files_opened = []
@@ -473,7 +495,6 @@ for default['corrected'] in ('', None):
             print("# Effective LR transfer:", file=f)
 
             curr = dict(default)
-            done = True
             mo = curr['momentum']
             lr_eff = curr['lr'] * lr_factor(mo, nesterov=curr.get('nesterov') == '')
             mo = decimal.Decimal(str(mo))  
@@ -482,25 +503,21 @@ for default['corrected'] in ('', None):
                 mos.append(next_mo(mos[-1]))
             while len(mos) < 6:
                 mos.appendleft(prev_mo(mos[0]))
-            factors = [0.5, 2**-0.5, 1., 2**0.5, 2.0]
 
+            factors = [0.5, 2**-0.5, 1., 2**0.5, 2.0]
+            accuracies = {}
             for curr['nesterov'] in ('', None):
                 for curr['momentum'] in mos:
                     for factor in factors:
                         base_lr = lr_eff / lr_factor(float(curr['momentum']), nesterov=curr.get('nesterov') == '')
                         curr['lr'] = factor * base_lr
-                        command = train_command(curr, fixed, opt='scion-t212', prefix=prefix)
-                        done = done and command[0] == '#'
-                        print(command, file=f)
-            if not done:
+                        cmds, acc = read_repeats(curr=curr, repeats=N_REPEATS)
+                        accuracies[curr['nesterov'], curr['momentum'], curr['lr']] = acc
+                        print(cmds[0], file=f)  # We only need one datapoint
+
+            if not all(accuracies.values()):
                 sys.exit()
 
-            accuracies = {}
-            for curr['nesterov'] in ('', None):
-                for curr['momentum'] in mos:
-                    for factor in factors:
-                        curr['lr'] = lr_eff * factor / lr_factor(float(curr['momentum']), nesterov=curr.get('nesterov') == '')
-                        accuracies[curr['nesterov'], curr['momentum'], curr['lr']], _ = read_repeats(curr, fixed, opt='scion-t212', prefix=prefix, path = 'logs/')
             key = max(accuracies, key=lambda k: statistics.fmean(accuracies[k]))
             avg = statistics.fmean(accuracies[key])
             default['nesterov'], default['momentum'], default['lr'] = key
@@ -533,6 +550,8 @@ for default['corrected'] in ('', None):
 
         if not final_acc:
             sys.exit()
+
+        log_time_default['momentum'] = float(log_time_default['momentum'])  # Avoid pitfall of inter-op between Decimal & float
 
         with open(file_prefix + "baseline_comparison.sh", "w") as f:
             diff = ['momentum', 'lr', 'end_mo_ratio']
