@@ -540,49 +540,8 @@ for default['corrected'] in ('', None):
 
         corrected_default = dict(default)
 
-        with open(file_prefix + "log_time_momentum.sh", "w") as f:
-
-            print(preface, file=f)
-            print("# Log-time momentum tuning:", file=f)
-
-            tuner = MoschAutoTuner(2 ** 0.5, default, f)
-            log_time_default, final_acc = tuner.run()
-
-        if not final_acc:
-            sys.exit()
-
-        log_time_default['momentum'] = float(log_time_default['momentum'])  # Avoid pitfall of inter-op between Decimal & float
-
-        with open(file_prefix + "baseline_comparison.sh", "w") as f:
-            diff = ['momentum', 'lr', 'end_mo_ratio']
-            baseline = {k: corrected_default[k] for k in diff}
-            log_time = {k: log_time_default[k] for k in diff}
-
-            print(preface, file=f)
-            print("# Log-time vs. baseline:", file=f)
-
-            tuner = AutoTuner(initial_values=[baseline, log_time], curr=corrected_default, f=f)
-            better, final_acc = tuner.run()
-
-        if not final_acc:
-            sys.exit()
-
-        with open(file_prefix + "log_time_training_budgets.sh", "w") as f:
-
-            print(preface, file=f)
-            print("# Log-time momentum with various training budgets:", file=f)
-            if better['end_mo_ratio'] is None:
-                print("# Skipped. Log-time momentum is not better.", file=f)
-            else:
-                done = test_training_budgets_with_mosch(default=better, eps=[30, 60, 90, 150, 300], f=f)
-
-        if not done:
-            sys.exit()
-
         # Prepare uncorrected default
-        default = dict(corrected_default)
         c_sq = default['c_sq']
-        default['c_sq'] = None
         mo, nesterov = default['momentum'], default.get('nesterov') == ''
         initial_wd = lr_factor(mo, nesterov) ** 2 * default['lr'] / c_sq / 2
         # Initial WD guess: half of the initial WD of the best corrected counterpart,
@@ -606,7 +565,7 @@ git -C /home/ubuntu/Downloads/mup-vit checkout {branch}
     print(preface, file=f)
     print("# AM-GM regularization exp.:", file=f)
 
-    tuner = AutoTuner(initial_values=[default, corrected_default, log_time_default], curr={}, f=f)
+    tuner = AutoTuner(initial_values=[default, corrected_default], curr={}, f=f)
     best, final_acc = tuner.run()
     best['sign_wd'] = 0.0
     if best['corrected'] == '':
@@ -623,4 +582,4 @@ pathlib.Path('done').touch()
 print('Done!')
 
 # print(files_opened)
-# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_training_budgets.sh', 'corrected_log_time_momentum.sh', 'corrected_baseline_comparison.sh', 'corrected_log_time_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'misc.sh', 'done']
+# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'misc.sh', 'done']
