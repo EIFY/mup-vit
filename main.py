@@ -83,6 +83,8 @@ parser.add_argument('--bias', action='store_true')
 parser.add_argument('--nesterov', action='store_true')
 parser.add_argument('--momentum', '--mo', default=0.1, type=float,
                     help='momentum for non-sign parameters')
+parser.add_argument('--sign-mo', default=0.1, type=float,
+                    help='momentum for sign parameter')
 parser.add_argument('--end-mo-ratio', default=1.0, type=float)
 parser.add_argument('--end-lr-ratio', default=1.0, type=float)
 parser.add_argument('--cautious', action='store_true',
@@ -326,6 +328,7 @@ def main_worker(gpu, args):
         'lr': args.sign_lr,
         'corrected': False,
         'weight_decay': args.sign_weight_decay,
+        'momentum': args.sign_mo,
     }]
 
     defaults = dict(lr=args.lr, momentum=args.momentum, nesterov=args.nesterov, cautious=args.cautious)
@@ -522,9 +525,9 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     exp_ratio = lambda ratio, step: ratio ** (step / total_steps)
 
     def scheduler(group, step):
-        group['momentum'] = args.momentum * exp_ratio(args.end_mo_ratio, step)
         ratio = lr_ratio(step)
         if group['corrected']:
+            group['momentum'] = args.momentum * exp_ratio(args.end_mo_ratio, step)
             group['lr'] = ratio * exp_ratio(args.end_lr_ratio, step) * group['max_lr_eff'] / lr_factor(group['momentum'], nesterov=group['nesterov'])
         else:
             group['lr'] = ratio * group['max_lr']
