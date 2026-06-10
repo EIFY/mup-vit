@@ -79,7 +79,6 @@ parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
-parser.add_argument('--bias', action='store_true')
 parser.add_argument('--nesterov', action='store_true')
 parser.add_argument('--momentum', '--mo', default=0.1, type=float,
                     help='momentum for non-sign parameters')
@@ -92,7 +91,9 @@ parser.add_argument('--sign-lr', default=0.2, type=float,
 parser.add_argument('--corrected', action='store_true')
 parser.add_argument('--wd', '--weight-decay', default=0.08, type=float)
 parser.add_argument('--c-sq', default=1.1875, type=float,
-                    help='normalized steady-state norm squared for non-sign parameters.')
+                    help='normalized steady-state norm squared for spectral parameters.')
+parser.add_argument('--bias-wd', default=math.inf, type=float)
+parser.add_argument('--bias-c-sq', default=0., type=float)
 parser.add_argument('--sign-weight-decay', '--sign-wd', default=0.004, type=float,
                     help='sign weight decay (default: 0.004)')
 parser.add_argument('--grad-clip-norm', type=float, default=1.0,
@@ -246,6 +247,10 @@ def main_worker(gpu, args):
         torch.cuda.set_device(args.rank)
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
+    zero_bias_norm = (
+        args.corrected and args.bias_c_sq == 0.) or (
+        not args.corrected and args.bias_wd == math.inf)
+    args.bias = not zero_bias_norm
     # create model
     model = SimpleVisionTransformer(
         image_size=args.input_resolution,
@@ -316,8 +321,8 @@ def main_worker(gpu, args):
         'params': bias,
         'norm': 'BiasRMS',
         'corrected': args.corrected,
-        'c_sq': args.c_sq,
-        'weight_decay': args.wd,
+        'c_sq': args.bias_c_sq,
+        'weight_decay': args.bias_wd,
     }, {
         'params': output,
         'norm': 'Sign',
