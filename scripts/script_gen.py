@@ -548,38 +548,8 @@ for default['corrected'] in ('', None):
         # so the average throughout the training is about the same
         default['wd'], default['c_sq'] = initial_wd / 2, None
 
-with open("misc.sh", "w") as f:
-    branch = 'am-gm'
-
-    preface = f"""#!/bin/bash
-
-MUPVIT_MAIN=~/Downloads/mup-vit/main.py
-PYTHON=torchrun
-N_WORKERS=100
-N_THREADS=124
-BS={BS}
-
-git -C /home/ubuntu/Downloads/mup-vit checkout {branch}
-"""
-
-    print(preface, file=f)
-    print("# AM-GM regularization exp.:", file=f)
-
-    tuner = AutoTuner(initial_values=[default, corrected_default], curr={}, f=f)
-    best, final_acc = tuner.run()
-    best['sign_wd'] = 0.0
-    if best['corrected'] == '':
-        best['c_sq'] = 'inf'
-    else:
-        best['wd'] = 0.0
-
-    tuner = LRAutoTuner('am_gm_reg', 1.0, 2 ** 0.5, best, f)
-    best, final_acc = tuner.run()
-    if not final_acc:
-        sys.exit()
-
 pathlib.Path('done').touch()
 print('Done!')
 
 # print(files_opened)
-# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'misc.sh', 'done']
+# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'done']
