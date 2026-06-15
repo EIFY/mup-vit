@@ -518,13 +518,27 @@ for default['corrected'] in ('', None):
             if not all(accuracies.values()):
                 sys.exit()
 
+        with open(file_prefix + "mo_baseline_comparison.sh", "w") as f:
+
+            print(preface, file=f)
+            print("# Double-check after the momentum sweep:", file=f)
+
             key = max(accuracies, key=lambda k: statistics.fmean(accuracies[k]))
-            avg = statistics.fmean(accuracies[key])
-            default['nesterov'], default['momentum'], default['lr'] = key
-            default['momentum'] = float(default['momentum'])  # Avoid pitfall of inter-op between Decimal & float
-            print(file=f)
-            print(f"# {(default['nesterov'], default['momentum'], default['lr'])=}, {avg=}", file=f)
-            print(f"# {default=}", file=f)
+            final_acc = accuracies[key]
+            avg = statistics.fmean(final_acc)
+            nesterov, momentum, lr = key
+            momentum = float(momentum)  # Avoid pitfall of inter-op between Decimal & float
+            if default['nesterov'] == nesterov and default['momentum'] == momentum:
+                print(file=f)
+                print(f"# {(default['nesterov'], default['momentum'], default['lr'])=}, {avg=}", file=f)
+                print(f"# {default=}", file=f)
+            else:
+                alt = {'nesterov': nesterov, 'momentum': momentum, 'lr': lr}
+                tuner = AutoTuner(initial_values=[{}, alt], curr=default, f=f)
+                default, final_acc = tuner.run()
+
+        if not final_acc:
+            sys.exit()
 
     with open(file_prefix + "training_budgets.sh", "w") as f:
 
@@ -552,4 +566,4 @@ pathlib.Path('done').touch()
 print('Done!')
 
 # print(files_opened)
-# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'done']
+# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'done']
