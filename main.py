@@ -542,6 +542,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         scheduler.step()
 
+    del gen
+
 
 def validate(val_loader, model, step, device, args):
 
