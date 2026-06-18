@@ -276,6 +276,23 @@ class LRAutoTuner(AutoTuner):
         return prev_lr, True
 
 
+class LimitedAutoTuner(LRAutoTuner):
+
+    def __init__(self, limit, key, initial_lr, factor, curr, f):
+        self.limit = limit
+        super().__init__(key=key, initial_lr=initial_lr, factor=factor, curr=curr, f=f)
+
+    def next_value(self):
+        if len(self.values) >= self.limit:
+            return None, False
+        return super().next_value()
+
+    def prev_value(self):
+        if len(self.values) >= self.limit:
+            return None, False
+        return super().prev_value()
+
+
 def lr_factor(momentum, nesterov):
     factor = math.sqrt((2 - momentum) / momentum)
     if nesterov:
@@ -540,6 +557,16 @@ for default['corrected'] in ('', None):
         if not final_acc:
             sys.exit()
 
+        with open(file_prefix + "bias.sh", "w") as f:
+
+            print(preface, file=f)
+            print("# Double-check model performance with bias:", file=f)
+            tuner = LimitedAutoTuner(limit=5, key='bias_c_sq', initial_lr=default['c_sq'] / 2, factor=2.0, curr=default, f=f)
+            bias_default, final_acc = tuner.run()
+
+        if not final_acc:
+            sys.exit()
+
     with open(file_prefix + "training_budgets.sh", "w") as f:
 
         print(preface, file=f)
@@ -566,4 +593,4 @@ pathlib.Path('done').touch()
 print('Done!')
 
 # print(files_opened)
-# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'done']
+# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'done']
