@@ -64,6 +64,8 @@ parser.add_argument('--register', default=0, type=int, metavar='N',
                          'https://arxiv.org/abs/2309.16588')
 parser.add_argument('--epochs', '--ep', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
+parser.add_argument('--decay', default=None, type=int,
+                    help='number of epochs for LR to decay. Default to all of training epochs')
 parser.add_argument('--log-steps', default=2500, type=int, metavar='N',
                     help='eval and log every N steps')
 parser.add_argument('--log-epoch', nargs='*', default=[], type=int,
@@ -416,6 +418,11 @@ def main_worker(gpu, args):
 
     n = len(train_dataset)
     total_steps = round(n * args.epochs / args.total_batch_size)
+    if args.decay is None:
+        args.decay_steps = total_steps
+    else:
+        args.decay_steps = round(n * args.decay / args.total_batch_size)
+
     args.specified_steps = {round(n * epoch / args.total_batch_size) for epoch in args.log_epoch}
     args.specified_steps.add(total_steps)
 
@@ -516,11 +523,19 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             trt2.to(device, non_blocking=True))
     )
 
-    def cosine_lr(step, factor=1.):
-        return factor * (1 + math.cos(step * math.pi / total_steps)) / 2
+    def cosine_lr(step):
+        stable_steps = total_steps - args.decay_steps
+        if step <= stable_steps:
+            return 1.
+        diff = step - stable_steps
+        return (1 + math.cos(diff * math.pi / args.decay_steps)) / 2
 
-    def linear_lr(step, factor=1.):
-        return (total_steps - step) * factor / total_steps
+    def linear_lr(step):
+        stable_steps = total_steps - args.decay_steps
+        if step <= stable_steps:
+            return 1.
+        diff = step - stable_steps
+        return (args.decay_steps - diff) / args.decay_steps
 
     lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
 
