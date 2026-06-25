@@ -26,7 +26,7 @@ def read_best(p):
 N_REPEATS = 3
 TOLERANCE = 0.002
 
-branch = 'unbiased'
+branch = 'stable-decay'
 
 preface = f"""#!/bin/bash
 
@@ -102,6 +102,20 @@ def test_training_budgets(default, eps, f):
     commands = []
     curr = dict(default)
     for curr['ep'] in eps:
+        cmds, acc = read_repeats(curr=curr, repeats=N_REPEATS)
+        commands.extend(cmds)
+        done = done and len(acc) == N_REPEATS
+    for command in commands:
+        print(command, file=f)
+    return done
+
+
+def test_training_budgets_stable_decay(default, eps, f, decay_fraction=0.3):
+    done = True
+    commands = []
+    curr = dict(default)
+    for curr['ep'] in eps:
+        curr['decay'] = round(curr['ep'] * decay_fraction)
         cmds, acc = read_repeats(curr=curr, repeats=N_REPEATS)
         commands.extend(cmds)
         done = done and len(acc) == N_REPEATS
@@ -577,6 +591,16 @@ for default['corrected'] in ('', None):
     if not done:
         sys.exit()
 
+    with open(file_prefix + "training_budgets_stable_decay.sh", "w") as f:
+
+        print(preface, file=f)
+        print("# Corrected with various training budgets w/ stable-decay LR:", file=f)
+
+        done = test_training_budgets_stable_decay(default=default, eps=[150, 300], f=f)
+
+    if not done:
+        sys.exit()
+
     if default.get('corrected') == '':
 
         corrected_default = dict(default)
@@ -593,4 +617,4 @@ pathlib.Path('done').touch()
 print('Done!')
 
 # print(files_opened)
-# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'done']
+# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_training_budgets.sh', 'corrected_training_budgets_stable_decay.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'training_budgets_stable_decay.sh', 'done']

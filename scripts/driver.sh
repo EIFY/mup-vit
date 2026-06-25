@@ -1,6 +1,6 @@
 #!/bin/bash
 
-scripts=("corrected_lr.sh" "corrected_wd.sh" "corrected_nesterov.sh" "corrected_momentum.sh" "corrected_sign_lr.sh" "corrected_sign_wd.sh" "corrected_lr_eff_transfer.sh" "corrected_mo_baseline_comparison.sh" "corrected_bias.sh" "corrected_training_budgets.sh" "lr.sh" "wd.sh" "nesterov.sh" "momentum.sh" "sign_lr.sh" "sign_wd.sh" "training_budgets.sh" "done")
+scripts=("corrected_lr.sh" "corrected_wd.sh" "corrected_nesterov.sh" "corrected_momentum.sh" "corrected_sign_lr.sh" "corrected_sign_wd.sh" "corrected_lr_eff_transfer.sh" "corrected_mo_baseline_comparison.sh" "corrected_bias.sh" "corrected_training_budgets.sh" "corrected_training_budgets_stable_decay.sh" "lr.sh" "wd.sh" "nesterov.sh" "momentum.sh" "sign_lr.sh" "sign_wd.sh" "training_budgets.sh" "training_budgets_stable_decay.sh" "done")
 
 len=${#scripts[@]}
 
