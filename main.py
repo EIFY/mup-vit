@@ -79,6 +79,8 @@ parser.add_argument("--accum-freq", default=1, type=int,
                     help="Update the model every --acum-freq steps.")
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='maximum learning rate', dest='lr')
+parser.add_argument('--min-ratio', default=0., type=float,
+                    help='minimum LR ratio at the end of decay')
 parser.add_argument('--nesterov', action='store_true')
 parser.add_argument('--momentum', '--mo', default=0.1, type=float,
                     help='momentum for non-sign parameters')
@@ -516,11 +518,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             trt2.to(device, non_blocking=True))
     )
 
-    def cosine_lr(step, factor=1.):
-        return factor * (1 + math.cos(step * math.pi / total_steps)) / 2
+    def cosine_lr(step):
+        return args.min_ratio + (1 - args.min_ratio) * (1 + math.cos(step * math.pi / total_steps)) / 2
 
-    def linear_lr(step, factor=1.):
-        return (total_steps - step) * factor / total_steps
+    def linear_lr(step):
+        return args.min_ratio + (1 - args.min_ratio) * (total_steps - step) / total_steps
 
     lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
 
