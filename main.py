@@ -87,7 +87,8 @@ parser.add_argument('--momentum', '--mo', default=0.1, type=float,
 parser.add_argument('--end-mo-ratio', default=1.0, type=float)
 parser.add_argument('--cautious', action='store_true',
                     help='Cautious weight decay (https://arxiv.org/abs/2510.12402v1)')
-parser.add_argument('--decay-shape', default='cosine', type=str, choices=['cosine', 'linear'])
+parser.add_argument('--power', default=None, type=float,
+                    help='power of the polynomial LR decay, defaults to cosine LR decay')
 parser.add_argument('--sign-lr', default=0.2, type=float,
                     help='maximum learning rate for the output layer')
 parser.add_argument('--corrected', action='store_true')
@@ -521,10 +522,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     def cosine_lr(step):
         return args.min_ratio + (1 - args.min_ratio) * (1 + math.cos(step * math.pi / total_steps)) / 2
 
-    def linear_lr(step):
-        return args.min_ratio + (1 - args.min_ratio) * (total_steps - step) / total_steps
+    def polynomial_lr(step):
+        progress = step / total_steps
+        return args.min_ratio + (1 - args.min_ratio) * (1 - progress) ** args.power
 
-    lr_ratio = cosine_lr if args.decay_shape == 'cosine' else linear_lr
+    lr_ratio = cosine_lr if args.power is None else polynomial_lr
 
     def scheduler(group, step):
         group['momentum'] = args.momentum * args.end_mo_ratio ** (step / total_steps)
