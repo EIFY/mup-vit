@@ -494,11 +494,11 @@ for default['corrected'] in ('', None):
         if default['corrected'] == '':
             print("# Corrected WD tuning:", file=f)
             key = 'c_sq'
-            initial_wd = default[key]
-            tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
         else:
-            print("# Joint WD and LR tuning:", file=f)
-            tuner = JointWDLRTuner(2 ** 0.5, default, f)
+            print("# Uncorrected WD tuning:", file=f)
+            key = 'wd'
+        initial_wd = default[key]
+        tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
         default, final_acc = tuner.run()
 
     if not final_acc:
