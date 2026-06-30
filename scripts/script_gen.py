@@ -26,7 +26,7 @@ def read_best(p):
 N_REPEATS = 3
 TOLERANCE = 0.002
 
-branch = 'unbiased'
+branch = 'power'
 
 preface = f"""#!/bin/bash
 
@@ -276,6 +276,26 @@ class LRAutoTuner(AutoTuner):
         return prev_lr, True
 
 
+class PowerAutoTuner(AutoTuner):
+
+    def __init__(self, key, initial_val, diff, curr, f):
+        self.key = key
+        self.diff = diff
+        super().__init__(initial_values=[{self.key: initial_val}], curr=curr, f=f)
+
+    def next_value(self):
+        nxt_val = dict(self.values[-1])
+        nxt_val[self.key] += self.diff
+        return nxt_val, True
+
+    def prev_value(self):
+        prev_val = dict(self.values[0])
+        prev_val[self.key] -= self.diff
+        if almost_eq(prev_val[self.key], 0.0):
+            return None, False
+        return prev_val, True
+
+
 class LimitedAutoTuner(LRAutoTuner):
 
     def __init__(self, limit, key, initial_lr, factor, curr, f):
@@ -424,7 +444,7 @@ class JointCsqLRTuner(AutoTuner):
 
 
 class JointWDLRTuner(AutoTuner):
-    """Jointly tune c_sq and lr based on rel. LR"""
+    """Jointly tune wd and lr based on rel. LR"""
     def __init__(self, factor, curr, f):
         assert curr['corrected'] is None, 'Must be an uncorrected experiment'
         self.factor = factor
@@ -442,7 +462,7 @@ class JointWDLRTuner(AutoTuner):
 
 
 # None is tombstone value, '' (empty string) is for store_true flags
-default = dict(corrected='', ep=90, momentum=0.1, lr=0.01, sign_lr=0.2, c_sq=1.1875, wd=None, sign_wd=0.004, am_gm_reg=None, nesterov=None, end_mo_ratio=None)
+default = dict(corrected='', ep=90, momentum=0.1, lr=0.01, sign_lr=0.2, c_sq=1.1875, wd=None, sign_wd=0.004, nesterov=None, power=None)
 
 # old_open = open
 # files_opened = []
@@ -613,6 +633,30 @@ for default['corrected'] in ('', None):
         if not final_acc:
             sys.exit()
 
+    with open(file_prefix + "power.sh", "w") as f:
+
+        print(preface, file=f)
+        print("# Polynomial decay power tuning:", file=f)
+
+        key = 'power'
+        initial_val = 1.3 if default.get('corrected') == '' else 1.0
+        tuner = PowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr, f)
+        power_default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
+    with open(file_prefix + "cosine_power_comparison.sh", "w") as f:
+
+        print(preface, file=f)
+        print("# Cosine vs. polynomial decay:", file=f)
+
+        tuner = AutoTuner(initial_values=[{}, {'power': power_default['power']}], curr=default, f=f)
+        default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
     with open(file_prefix + "training_budgets.sh", "w") as f:
 
         print(preface, file=f)
@@ -634,9 +678,10 @@ for default['corrected'] in ('', None):
         # Initial WD guess: half of the initial WD of the best corrected counterpart,
         # so the average throughout the training is about the same
         default['wd'], default['c_sq'] = initial_wd / 2, None
+        default['power'] = None
 
 pathlib.Path('done').touch()
 print('Done!')
 
 # print(files_opened)
-# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_c_sq_lr.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'training_budgets.sh', 'done']
+# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_c_sq_lr.sh', 'corrected_power.sh', 'corrected_cosine_power_comparison.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'power.sh', 'cosine_power_comparison.sh', 'training_budgets.sh', 'done']
