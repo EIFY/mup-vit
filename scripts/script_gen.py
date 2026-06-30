@@ -640,7 +640,7 @@ for default['corrected'] in ('', None):
 
         key = 'power'
         initial_val = 1.3 if default.get('corrected') == '' else 1.0
-        tuner = PowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr, f)
+        tuner = PowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr=default, f=f)
         power_default, final_acc = tuner.run()
 
     if not final_acc:
