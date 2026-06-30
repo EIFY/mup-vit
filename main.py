@@ -87,6 +87,8 @@ parser.add_argument('--momentum', '--mo', default=0.1, type=float,
 parser.add_argument('--end-mo-ratio', default=1.0, type=float)
 parser.add_argument('--cautious', action='store_true',
                     help='Cautious weight decay (https://arxiv.org/abs/2510.12402v1)')
+parser.add_argument('--cos-power', default=1.0, type=float,
+                    help='power of the cosine LR decay, defaults to 1')
 parser.add_argument('--power', default=None, type=float,
                     help='power of the polynomial LR decay, defaults to cosine LR decay')
 parser.add_argument('--sign-lr', default=0.2, type=float,
@@ -520,7 +522,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     )
 
     def cosine_lr(step):
-        return args.min_ratio + (1 - args.min_ratio) * (1 + math.cos(step * math.pi / total_steps)) / 2
+        progress = step / total_steps
+        return args.min_ratio + (1 - args.min_ratio) * ((1 + math.cos(progress * math.pi)) / 2) ** args.cos_power
 
     def polynomial_lr(step):
         progress = step / total_steps
