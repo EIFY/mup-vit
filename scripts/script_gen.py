@@ -296,6 +296,36 @@ class PowerAutoTuner(AutoTuner):
         return prev_val, True
 
 
+class CosPowerAutoTuner(AutoTuner):
+
+    def __init__(self, key, initial_val, diff, curr, f):
+        self.key = key
+        self.diff = diff
+        if almost_eq(initial_val, 1.0):
+            initial_val = None
+        super().__init__(initial_values=[{self.key: initial_val}], curr=curr, f=f)
+
+    def next_value(self):
+        nxt_val = self.values[-1][self.key]
+        if nxt_val is None:
+            nxt_val = 1.0
+        nxt_val += self.diff
+        if almost_eq(nxt_val, 1.0):
+            nxt_val = None
+        return {self.key: nxt_val}, True
+
+    def prev_value(self):
+        prev_val = self.values[0][self.key]
+        if prev_val is None:
+            prev_val = 1.0
+        prev_val -= self.diff
+        if almost_eq(prev_val, 0.0):
+            return None, False
+        if almost_eq(prev_val, 1.0):
+            prev_val = None
+        return {self.key: prev_val}, True
+
+
 class LimitedAutoTuner(LRAutoTuner):
 
     def __init__(self, limit, key, initial_lr, factor, curr, f):
@@ -462,7 +492,7 @@ class JointWDLRTuner(AutoTuner):
 
 
 # None is tombstone value, '' (empty string) is for store_true flags
-default = dict(corrected='', ep=90, momentum=0.1, lr=0.01, sign_lr=0.2, c_sq=1.1875, wd=None, sign_wd=0.004, nesterov=None, power=None)
+default = dict(corrected='', ep=90, momentum=0.1, lr=0.01, sign_lr=0.2, c_sq=1.1875, wd=None, sign_wd=0.004, nesterov=None, cos_power=None, power=None)
 
 # old_open = open
 # files_opened = []
@@ -646,12 +676,29 @@ for default['corrected'] in ('', None):
     if not final_acc:
         sys.exit()
 
+    with open(file_prefix + "cos_power.sh", "w") as f:
+
+        print(preface, file=f)
+        print("# Cosine decay power tuning:", file=f)
+
+        key = 'cos_power'
+        initial_val = 0.9 if default.get('corrected') == '' else 1.0
+        tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr=default, f=f)
+        default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
     with open(file_prefix + "cosine_power_comparison.sh", "w") as f:
 
         print(preface, file=f)
         print("# Cosine vs. polynomial decay:", file=f)
 
-        tuner = AutoTuner(initial_values=[{}, {'power': power_default['power']}], curr=default, f=f)
+        initial_values = [{'cos_power': default['cos_power']}]
+        initial_values.append({'power': power_default['power']})
+        default['cos_power'] = None
+
+        tuner = AutoTuner(initial_values=initial_values, curr=default, f=f)
         default, final_acc = tuner.run()
 
     if not final_acc:
@@ -678,10 +725,11 @@ for default['corrected'] in ('', None):
         # Initial WD guess: half of the initial WD of the best corrected counterpart,
         # so the average throughout the training is about the same
         default['wd'], default['c_sq'] = initial_wd / 2, None
-        default['power'] = None
+        # Reset fancy schedule
+        default['cos_power'] = default['power'] = None
 
 pathlib.Path('done').touch()
 print('Done!')
 
 # print(files_opened)
-# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_c_sq_lr.sh', 'corrected_power.sh', 'corrected_cosine_power_comparison.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'power.sh', 'cosine_power_comparison.sh', 'training_budgets.sh', 'done']
+# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_c_sq_lr.sh', 'corrected_power.sh', 'corrected_cos_power.sh', 'corrected_cosine_power_comparison.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'power.sh', 'cos_power.sh', 'cosine_power_comparison.sh', 'training_budgets.sh', 'done']
