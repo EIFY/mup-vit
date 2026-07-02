@@ -79,8 +79,20 @@ class EncoderBlock(nn.Module):
         attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
         bias : bool = True,
+        scale: Optional[int] = None,
     ):
         super().__init__()
+        if scale is None:
+            self.a = self.b = self.c = self.d = torch.tensor(1, dtype=torch.int32)
+        else:
+            scale = torch.tensor(scale, dtype=torch.int32)
+            s = 1 / (scale + 2)
+            denom = torch.sqrt((1 - s) ** 2 + s ** 2)
+            self.a, self.b = (1 - s) / denom, s / denom
+            s = 1 / (scale + 3)
+            denom = torch.sqrt((1 - s) ** 2 + s ** 2)
+            self.c, self.d = (1 - s) / denom, s / denom
+
         self.num_heads = num_heads
 
         # Attention block
@@ -93,16 +105,15 @@ class EncoderBlock(nn.Module):
         self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout, bias)
 
 
-    def forward(self, input: torch.Tensor):
-        torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
-        x = self.ln_1(input)
-        x = self.self_attention(x)
-        x = self.dropout(x)
-        x = x + input
-
+    def forward(self, x: torch.Tensor):
+        torch._assert(x.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {x.shape}")
+        y = self.ln_1(x)
+        y = self.self_attention(y)
+        y = self.dropout(y)
+        x = self.a * x + self.b * y
         y = self.ln_2(x)
         y = self.mlp(y)
-        return x + y
+        return self.c * x + self.d * y
 
 
 class Encoder(nn.Module):
@@ -118,6 +129,8 @@ class Encoder(nn.Module):
         attention_dropout: float,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
         bias : bool = True,
+        final_norm : bool = True,
+        scaled: bool = False,
     ):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
@@ -131,9 +144,10 @@ class Encoder(nn.Module):
                 attention_dropout,
                 norm_layer,
                 bias,
+                scale=i*2 if scaled else None,
             )
         self.layers = nn.Sequential(layers)
-        self.ln = norm_layer(hidden_dim)
+        self.ln = norm_layer(hidden_dim) if final_norm else nn.Identity()
 
     def forward(self, input: torch.Tensor):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
@@ -173,6 +187,8 @@ class SimpleVisionTransformer(nn.Module):
         register: int = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.RMSNorm, eps=1e-6, elementwise_affine=False),
         bias: bool = True,
+        final_norm : bool = True,
+        scaled: bool = False,
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
@@ -214,6 +230,8 @@ class SimpleVisionTransformer(nn.Module):
             attention_dropout,
             norm_layer,
             bias=bias,
+            final_norm=final_norm,
+            scaled=scaled,
         )
         self.seq_length = seq_length
 

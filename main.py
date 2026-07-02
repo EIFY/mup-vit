@@ -10,6 +10,7 @@ import time
 import warnings
 from datetime import datetime
 from enum import Enum
+from functools import partial
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -52,6 +53,9 @@ parser.add_argument('--num-layers', default=12, type=int, metavar='N')
 parser.add_argument('--num-heads', default=6, type=int, metavar='N')
 parser.add_argument('--posemb', default='sincos2d', type=str,
                     choices=['none', 'sincos2d', 'learn'])
+parser.add_argument('--scaled', action='store_true')
+parser.add_argument('--norm-layer', action='store_true')
+parser.add_argument('--final-norm', action='store_true')
 parser.add_argument('--mlp-head', action='store_true',
                     help='Use a MLP classification head with one hidden tanh layer '
                          'instead of a single linear layer')
@@ -262,6 +266,7 @@ def main_worker(gpu, args):
     # 1. PyTorch 2.0+ adds '_orig_mod.' prefix to keys of state_dict() of compiled models.
     # 2. DDP wraps the model as the "module" attribute.
 
+    rmsnorm = partial(nn.RMSNorm, eps=1e-6, elementwise_affine=False)
     original_model = model = SimpleVisionTransformer(
         image_size=args.input_resolution,
         patch_size=args.patch_size,
@@ -273,7 +278,10 @@ def main_worker(gpu, args):
         representation_size=args.representation_size,
         pool_type=args.pool_type,
         register=args.register,
+        norm_layer=rmsnorm if args.norm_layer else nn.Identity,
         bias=args.bias,
+        final_norm=args.final_norm,
+        scaled=args.scaled,
     )
 
     args.total_batch_size = args.batch_size
