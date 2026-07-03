@@ -326,6 +326,34 @@ class CosPowerAutoTuner(AutoTuner):
         return {self.key: prev_val}, True
 
 
+class LRPowerAutoTuner(AutoTuner):
+    """Nested AutoTuner for LR & schedule power"""
+    def __init__(self, factor, initial_value, p_tuner, key, diff, curr, f):
+        self.factor = factor
+        self.p_tuner = p_tuner
+        self.key = key
+        self.diff = diff
+        super().__init__(initial_values=[initial_value], curr=curr, f=f)
+
+    def test_value(self, val):
+        commands = [f"# Inner {self.key} optimization:"]
+        tuner = self.p_tuner(key=self.key, initial_val=val[self.key], diff=self.diff, curr=self.curr | val, f=self.f)
+        best_p, cmds, acc = tuner.optimize()
+        val |= best_p
+        commands.extend(cmds)
+        return val, commands, acc  # All commands tuner ordered are necessary.
+
+    def next_value(self):
+        nxt_lr = dict(self.values[-1])
+        nxt_lr['lr'] *= self.factor
+        return nxt_lr, True
+
+    def prev_value(self):
+        prev_lr = dict(self.values[0])
+        prev_lr['lr'] /= self.factor
+        return prev_lr, True
+
+
 class LimitedAutoTuner(LRAutoTuner):
 
     def __init__(self, limit, key, initial_lr, factor, curr, f):
@@ -440,7 +468,7 @@ class MoschAutoTuner(MomentumAutoTuner):
         best_ratio, cmds, acc = ratio_tuner.optimize()
         val |= best_ratio
         commands.extend(cmds)
-        return val, commands, acc  # All commoands ratio_tuner ordered are necessary.
+        return val, commands, acc  # All commands ratio_tuner ordered are necessary.
 
     def next_value(self):
         nxt, ok = super().next_value()
@@ -670,7 +698,9 @@ for default['corrected'] in ('', None):
 
         key = 'power'
         initial_val = 1.3 if default.get('corrected') == '' else 1.0
-        tuner = PowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr=default, f=f)
+        initial_value = {key: initial_val, 'lr': default['lr']}
+        tuner = LRPowerAutoTuner(
+            factor=2**0.5, initial_value=initial_value, p_tuner=PowerAutoTuner, key=key, diff=0.1, curr=default, f=f)
         power_default, final_acc = tuner.run()
 
     if not final_acc:
@@ -683,7 +713,12 @@ for default['corrected'] in ('', None):
 
         key = 'cos_power'
         initial_val = 0.9 if default.get('corrected') == '' else 1.0
-        tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr=default, f=f)
+        initial_lr = default['lr']
+        if default.get('corrected') == '':
+            initial_lr /= 2**0.5
+        initial_value = {key: initial_val, 'lr': initial_lr}
+        tuner = LRPowerAutoTuner(
+            factor=2**0.5, initial_value=initial_value, p_tuner=CosPowerAutoTuner, key=key, diff=0.1, curr=default, f=f)
         default, final_acc = tuner.run()
 
     if not final_acc:
@@ -694,8 +729,8 @@ for default['corrected'] in ('', None):
         print(preface, file=f)
         print("# Cosine vs. polynomial decay:", file=f)
 
-        initial_values = [{'cos_power': default['cos_power']}]
-        initial_values.append({'power': power_default['power']})
+        initial_values = [{'cos_power': default['cos_power'], 'lr': default['lr']}]
+        initial_values.append({'power': power_default['power'], 'lr': power_default['lr']})
         default['cos_power'] = None
 
         tuner = AutoTuner(initial_values=initial_values, curr=default, f=f)
