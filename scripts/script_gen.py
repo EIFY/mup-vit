@@ -328,8 +328,9 @@ class CosPowerAutoTuner(AutoTuner):
 
 class LRPowerAutoTuner(AutoTuner):
     """Nested AutoTuner for LR & schedule power"""
-    def __init__(self, factor, initial_value, p_tuner, key, diff, curr, f):
+    def __init__(self, factor, initial_value, comp, p_tuner, key, diff, curr, f):
         self.factor = factor
+        self.comp = comp
         self.p_tuner = p_tuner
         self.key = key
         self.diff = diff
@@ -346,11 +347,17 @@ class LRPowerAutoTuner(AutoTuner):
     def next_value(self):
         nxt_lr = dict(self.values[-1])
         nxt_lr['lr'] *= self.factor
+        if nxt_lr[self.key] is None:
+            nxt_lr[self.key] = 1.0
+        nxt_lr[self.key] += self.comp
         return nxt_lr, True
 
     def prev_value(self):
         prev_lr = dict(self.values[0])
         prev_lr['lr'] /= self.factor
+        if prev_lr[self.key] is None:
+            prev_lr[self.key] = 1.0
+        prev_lr[self.key] -= self.comp
         return prev_lr, True
 
 
@@ -697,10 +704,10 @@ for default['corrected'] in ('', None):
         print("# Polynomial decay power tuning:", file=f)
 
         key = 'power'
-        initial_val = 1.3 if default.get('corrected') == '' else 1.0
+        initial_val = 1.0
         initial_value = {key: initial_val, 'lr': default['lr']}
         tuner = LRPowerAutoTuner(
-            factor=2**0.5, initial_value=initial_value, p_tuner=PowerAutoTuner, key=key, diff=0.1, curr=default, f=f)
+            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, diff=0.1, curr=default, f=f)
         power_default, final_acc = tuner.run()
 
     if not final_acc:
@@ -712,13 +719,10 @@ for default['corrected'] in ('', None):
         print("# Cosine decay power tuning:", file=f)
 
         key = 'cos_power'
-        initial_val = 0.9 if default.get('corrected') == '' else 1.0
-        initial_lr = default['lr']
-        if default.get('corrected') == '':
-            initial_lr /= 2**0.5
-        initial_value = {key: initial_val, 'lr': initial_lr}
+        initial_val = 1.0
+        initial_value = {key: initial_val, 'lr': default['lr']}
         tuner = LRPowerAutoTuner(
-            factor=2**0.5, initial_value=initial_value, p_tuner=CosPowerAutoTuner, key=key, diff=0.1, curr=default, f=f)
+            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, diff=0.1, curr=default, f=f)
         default, final_acc = tuner.run()
 
     if not final_acc:
