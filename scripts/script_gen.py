@@ -358,6 +358,7 @@ class LRPowerAutoTuner(AutoTuner):
         if prev_lr[self.key] is None:
             prev_lr[self.key] = 1.0
         prev_lr[self.key] -= self.comp
+        prev_lr[self.key] = max(prev_lr[self.key], self.diff)
         return prev_lr, True
 
 
