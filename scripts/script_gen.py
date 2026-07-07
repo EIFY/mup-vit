@@ -708,7 +708,20 @@ for default['corrected'] in ('', None):
         initial_val = 1.0
         initial_value = {key: initial_val, 'lr': default['lr']}
         tuner = LRPowerAutoTuner(
-            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, diff=0.1, curr=default, f=f)
+            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, diff=0.2, curr=default, f=f)
+        power_default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
+    with open(file_prefix + "power.sh", "w") as f:
+
+        print(preface, file=f)
+        print("# Polynomial decay power tuning:", file=f)
+
+        key = 'power'
+        initial_val = power_default[key]
+        tuner = PowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr=power_default, f=f)
         power_default, final_acc = tuner.run()
 
     if not final_acc:
@@ -723,7 +736,20 @@ for default['corrected'] in ('', None):
         initial_val = 1.0
         initial_value = {key: initial_val, 'lr': default['lr']}
         tuner = LRPowerAutoTuner(
-            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, diff=0.1, curr=default, f=f)
+            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, diff=0.2, curr=default, f=f)
+        default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
+    with open(file_prefix + "cos_power.sh", "w") as f:
+
+        print(preface, file=f)
+        print("# Cosine decay power tuning:", file=f)
+
+        key = 'cos_power'
+        initial_val = default[key]
+        tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr=default, f=f)
         default, final_acc = tuner.run()
 
     if not final_acc:
