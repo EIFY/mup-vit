@@ -328,20 +328,26 @@ class CosPowerAutoTuner(AutoTuner):
 
 class LRPowerAutoTuner(AutoTuner):
     """Nested AutoTuner for LR & schedule power"""
-    def __init__(self, factor, initial_value, comp, p_tuner, key, diff, curr, f):
+    def __init__(self, factor, initial_value, comp, p_tuner, key, coarse, fine, curr, f):
         self.factor = factor
         self.comp = comp
         self.p_tuner = p_tuner
         self.key = key
-        self.diff = diff
+        self.coarse = coarse
+        self.fine = fine
         super().__init__(initial_values=[initial_value], curr=curr, f=f)
 
     def test_value(self, val):
         commands = [f"# Inner {self.key} optimization:"]
-        tuner = self.p_tuner(key=self.key, initial_val=val[self.key], diff=self.diff, curr=self.curr | val, f=self.f)
+        tuner = self.p_tuner(key=self.key, initial_val=val[self.key], diff=self.coarse, curr=self.curr | val, f=self.f)
         best_p, cmds, acc = tuner.optimize()
         val |= best_p
         commands.extend(cmds)
+        if acc:
+            tuner = self.p_tuner(key=self.key, initial_val=val[self.key], diff=self.fine, curr=self.curr | val, f=self.f)
+            best_p, cmds, acc = tuner.optimize()
+            val |= best_p
+            commands.extend(cmds)
         return val, commands, acc  # All commands tuner ordered are necessary.
 
     def next_value(self):
@@ -358,7 +364,7 @@ class LRPowerAutoTuner(AutoTuner):
         if prev_lr[self.key] is None:
             prev_lr[self.key] = 1.0
         prev_lr[self.key] -= self.comp
-        prev_lr[self.key] = max(prev_lr[self.key], self.diff)
+        prev_lr[self.key] = max(prev_lr[self.key], self.coarse)
         return prev_lr, True
 
 
@@ -708,20 +714,7 @@ for default['corrected'] in ('', None):
         initial_val = 1.0
         initial_value = {key: initial_val, 'lr': default['lr']}
         tuner = LRPowerAutoTuner(
-            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, diff=0.2, curr=default, f=f)
-        power_default, final_acc = tuner.run()
-
-    if not final_acc:
-        sys.exit()
-
-    with open(file_prefix + "power.sh", "w") as f:
-
-        print(preface, file=f)
-        print("# Polynomial decay power tuning:", file=f)
-
-        key = 'power'
-        initial_val = power_default[key]
-        tuner = PowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr=power_default, f=f)
+            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, coarse=0.2, fine=0.1, curr=default, f=f)
         power_default, final_acc = tuner.run()
 
     if not final_acc:
@@ -736,20 +729,7 @@ for default['corrected'] in ('', None):
         initial_val = 1.0
         initial_value = {key: initial_val, 'lr': default['lr']}
         tuner = LRPowerAutoTuner(
-            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, diff=0.2, curr=default, f=f)
-        default, final_acc = tuner.run()
-
-    if not final_acc:
-        sys.exit()
-
-    with open(file_prefix + "cos_power.sh", "w") as f:
-
-        print(preface, file=f)
-        print("# Cosine decay power tuning:", file=f)
-
-        key = 'cos_power'
-        initial_val = default[key]
-        tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.1, curr=default, f=f)
+            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, coarse=0.2, fine=0.1, curr=default, f=f)
         default, final_acc = tuner.run()
 
     if not final_acc:
