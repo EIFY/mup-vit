@@ -55,7 +55,7 @@ def flags(d):
 fixed = dict(workers="$N_WORKERS", multiprocessing_distributed='', batch_size="$BS", mlp_head='', scaled='', torchvision_inception_crop='', grad_clip_norm=100000000., report_to='wandb', print_freq=25)
 
 
-def test_params(curr, fixed=fixed, opt='scion-t212', prefix=prefix, path='logs/', repeat=0):
+def test_params(curr, fixed=fixed, opt='unnormed', prefix=prefix, path='logs/', repeat=0):
     name = run_name(opt, curr, repeat=repeat)
     step = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
     path_name = os.path.join(path, name)
@@ -73,7 +73,7 @@ def test_params(curr, fixed=fixed, opt='scion-t212', prefix=prefix, path='logs/'
     return command, accuracy
 
 
-def read_repeats(curr, fixed=fixed, opt='scion-t212', prefix=prefix, path='logs/', repeats=N_REPEATS):
+def read_repeats(curr, fixed=fixed, opt='unnormed', prefix=prefix, path='logs/', repeats=N_REPEATS):
     commands, acc = [], []
     for repeat in range(repeats):
         command, accuracy = test_params(curr=curr, repeat=repeat)
