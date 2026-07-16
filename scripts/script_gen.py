@@ -705,6 +705,16 @@ for default['corrected'] in ('', None):
         if not final_acc:
             sys.exit()
 
+    with open(file_prefix + "cos_training_budgets.sh", "w") as f:
+
+        print(preface, file=f)
+        print("# Cosine LR schedule with various training budgets:", file=f)
+
+        done = test_training_budgets(default=default, eps=[30, 60, 90, 150, 300], f=f)
+
+    if not done:
+        sys.exit()
+
     with open(file_prefix + "power.sh", "w") as f:
 
         print(preface, file=f)
@@ -778,4 +788,4 @@ pathlib.Path('done').touch()
 print('Done!')
 
 # print(files_opened)
-# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_c_sq_lr.sh', 'corrected_power.sh', 'corrected_cos_power.sh', 'corrected_cosine_power_comparison.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'power.sh', 'cos_power.sh', 'cosine_power_comparison.sh', 'training_budgets.sh', 'done']
+# ['corrected_lr.sh', 'corrected_wd.sh', 'corrected_nesterov.sh', 'corrected_momentum.sh', 'corrected_sign_lr.sh', 'corrected_sign_wd.sh', 'corrected_lr_eff_transfer.sh', 'corrected_mo_baseline_comparison.sh', 'corrected_bias.sh', 'corrected_c_sq_lr.sh', 'corrected_cos_training_budgets.sh', 'corrected_power.sh', 'corrected_cos_power.sh', 'corrected_cosine_power_comparison.sh', 'corrected_training_budgets.sh', 'lr.sh', 'wd.sh', 'nesterov.sh', 'momentum.sh', 'sign_lr.sh', 'sign_wd.sh', 'cos_training_budgets.sh', 'power.sh', 'cos_power.sh', 'cosine_power_comparison.sh', 'training_budgets.sh', 'done']
