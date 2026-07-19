@@ -301,7 +301,7 @@ class CosPowerAutoTuner(AutoTuner):
     def __init__(self, key, initial_val, diff, curr, f):
         self.key = key
         self.diff = diff
-        if almost_eq(initial_val, 1.0):
+        if type(initial_val) is float and almost_eq(initial_val, 1.0):
             initial_val = None
         super().__init__(initial_values=[{self.key: initial_val}], curr=curr, f=f)
 
