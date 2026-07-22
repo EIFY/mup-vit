@@ -558,6 +558,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
         # do SGD step
         l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
+        if args.wandb and is_primary(args):
+            head_grads_sq = original_model.heads.head.weight.grad.square().sum().item()
         optimizer.step()
         optimizer.zero_grad()
 
@@ -571,7 +573,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 if is_primary(args):
 
                     with torch.no_grad():
-                        l2_params = sum(p.square().sum().item() for _, p in model.named_parameters())
+                        l2_params = sum(p.square().sum().item() for p in model.parameters())
+                        l2_head_params = original_model.heads.head.weight.square().sum().item()
 
                     group = optimizer.param_groups[0]
                     lr, momentum = group['lr'], group['momentum']
@@ -588,7 +591,11 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "lr": lr,
                         "effective_lr": effective_lr,
                         "l2_grads": l2_grads.item(),
-                        "l2_params": math.sqrt(l2_params)
+                        "l2_head_grads": math.sqrt(head_grads_sq),
+                        "l2_hidden_grads": math.sqrt(l2_grads ** 2 - head_grads_sq),
+                        "l2_params": math.sqrt(l2_params),
+                        "l2_head_params": math.sqrt(l2_head_params),
+                        "l2_hidden_params": math.sqrt(l2_params - l2_head_params),
                     }
                     log_data['spectral_norm'], log_data['bias_norm'], log_data['sign_norm'] = optimizer.report_norms()
                     wandb.log(log_data, step=step)
