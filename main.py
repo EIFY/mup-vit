@@ -256,8 +256,13 @@ def main_worker(gpu, args):
         args.corrected and args.bias_c_sq == 0.) or (
         not args.corrected and args.bias_wd == math.inf)
     args.bias = not zero_bias_norm
-    # create model
-    model = SimpleVisionTransformer(
+
+    # Create model
+    # We keep the original model and use it to save checkpoints or access submodules since:
+    # 1. PyTorch 2.0+ adds '_orig_mod.' prefix to keys of state_dict() of compiled models.
+    # 2. DDP wraps the model as the "module" attribute.
+
+    original_model = model = SimpleVisionTransformer(
         image_size=args.input_resolution,
         patch_size=args.patch_size,
         num_layers=args.num_layers,
@@ -472,11 +477,7 @@ def main_worker(gpu, args):
         params_file = os.path.join(args.logs, args.name, "params.txt")
         wandb.save(params_file)
 
-    # Pytorch 2.0 adds '_orig_mod.' prefix to keys of state_dict() of compiled models.
-    # For compatibility, we save state_dict() of the original model, which shares the
-    # weights without the prefix.
     print('Compiling model...')
-    original_model = model
 
     # Inductor doesn't support MPS yet (https://github.com/pytorch/pytorch/issues/125254)
     model = torch.compile(
