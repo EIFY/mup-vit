@@ -433,8 +433,7 @@ def main_worker(gpu, args):
     print('Compiling model...')
 
     # Inductor doesn't support MPS yet (https://github.com/pytorch/pytorch/issues/125254)
-    model = torch.compile(
-        original_model, backend="aot_eager" if device.type == 'mps' else "inductor")
+    model = torch.compile(model, backend="aot_eager" if device.type == 'mps' else "inductor")
 
     if args.evaluate:
         # evaluate on validation set.
