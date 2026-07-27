@@ -26,7 +26,7 @@ def read_best(p):
 N_REPEATS = 3
 TOLERANCE = 0.002
 
-branch = 'power'
+branch = 'l2_head'
 
 preface = f"""#!/bin/bash
 

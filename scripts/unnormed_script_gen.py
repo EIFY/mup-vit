@@ -11,7 +11,7 @@ def read_best(p):
 N_REPEATS = 3
 TOLERANCE = 0.002
 
-branch = 'unnormed'
+branch = 'l2_head'
 
 preface = f"""#!/bin/bash
 
@@ -52,7 +52,7 @@ def flags(d):
     return ' '.join(l)
 
 
-fixed = dict(workers="$N_WORKERS", multiprocessing_distributed='', batch_size="$BS", mlp_head='', scaled='', torchvision_inception_crop='', grad_clip_norm=100000000., report_to='wandb', print_freq=25)
+fixed = dict(workers="$N_WORKERS", multiprocessing_distributed='', batch_size="$BS", mlp_head='', scaled=None, torchvision_inception_crop='', grad_clip_norm=100000000., report_to='wandb', print_freq=25)
 
 
 def test_params(curr, fixed=fixed, opt='unnormed', prefix=prefix, path='logs/', repeat=0):
@@ -76,7 +76,7 @@ def test_params(curr, fixed=fixed, opt='unnormed', prefix=prefix, path='logs/', 
 def read_repeats(curr, fixed=fixed, opt='unnormed', prefix=prefix, path='logs/', repeats=N_REPEATS):
     commands, acc = [], []
     for repeat in range(repeats):
-        command, accuracy = test_params(curr=curr, repeat=repeat)
+        command, accuracy = test_params(curr=curr, opt=opt, repeat=repeat)
         commands.append(command)
         acc.append(accuracy)
     return commands, [a for a in acc if a is not None]
@@ -270,6 +270,37 @@ class JointCsqLRTuner(AutoTuner):
 # Best hyperparameters w/ cosine LR schedule, taken from corrected_c_sq_lr.sh
 default = {'corrected': '', 'ep': 90, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': 0.8396893026590251, 'wd': None, 'sign_wd': 0.00282842712474619, 'nesterov': '', 'cos_power': None, 'power': None}
 
+with open("rel_lr.sh", "w") as f:
+    print(preface, file=f)
+    print("# Near-scale-invariant relative LR:", file=f)
+    accuracies = {}
+    curr = dict(default)
+    factors = [0.5, 2**-0.5, 1., 2**0.5, 2.0]
+    for lr_f in factors:
+        for c_sq_f in factors:
+            curr['lr'] = lr_f * math.sqrt(c_sq_f) * default['lr']
+            curr['c_sq'] = c_sq_f * default['c_sq']
+            cmds, acc = read_repeats(curr=curr, repeats=N_REPEATS, opt='scion-t212')
+            accuracies[curr['lr'], curr['c_sq']] = acc
+            print(cmds[0], file=f)  # We only need one datapoint
+
+if not all(accuracies.values()):
+    sys.exit()
+
+branch = 'unnormed'
+
+preface = f"""#!/bin/bash
+
+MUPVIT_MAIN=~/Downloads/mup-vit/main.py
+PYTHON=torchrun
+N_WORKERS=100
+N_THREADS=124
+BS={BS}
+
+git -C /home/ubuntu/Downloads/mup-vit checkout {branch}
+"""
+
+fixed['scaled'] = ''
 file_prefix = 'unnormed_corrected_'
 
 with open(file_prefix + "lr.sh", "w") as f:
