@@ -398,7 +398,7 @@ def next_mo(mo):
     else:
         mo *= 5
         mo /= 2
-    return mo
+    return mo.normalize()
 
 
 def prev_mo(mo):
@@ -407,7 +407,7 @@ def prev_mo(mo):
     else:
         mo /= 5
         mo *= 2
-    return mo
+    return mo.normalize()
 
 
 class MomentumAutoTuner(AutoTuner):
