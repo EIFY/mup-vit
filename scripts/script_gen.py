@@ -278,29 +278,35 @@ class LRAutoTuner(AutoTuner):
 
 class PowerAutoTuner(AutoTuner):
 
-    def __init__(self, key, initial_val, diff, curr, f):
+    def __init__(self, key, initial_val, diff, curr, f, low=0., high=math.inf):
         self.key = key
         self.diff = diff
+        self.low = low
+        self.high = high
         super().__init__(initial_values=[{self.key: initial_val}], curr=curr, f=f)
 
     def next_value(self):
         nxt_val = dict(self.values[-1])
         nxt_val[self.key] += self.diff
+        if almost_eq(nxt_val[self.key], self.high) or nxt_val[self.key] > self.high:
+            return None, False
         return nxt_val, True
 
     def prev_value(self):
         prev_val = dict(self.values[0])
         prev_val[self.key] -= self.diff
-        if almost_eq(prev_val[self.key], 0.0):
+        if almost_eq(prev_val[self.key], self.low) or prev_val[self.key] < self.low:
             return None, False
         return prev_val, True
 
 
 class CosPowerAutoTuner(AutoTuner):
 
-    def __init__(self, key, initial_val, diff, curr, f):
+    def __init__(self, key, initial_val, diff, curr, f, low=0., high=math.inf):
         self.key = key
         self.diff = diff
+        self.low = low
+        self.high = high
         if type(initial_val) is float and almost_eq(initial_val, 1.0):
             initial_val = None
         super().__init__(initial_values=[{self.key: initial_val}], curr=curr, f=f)
@@ -310,6 +316,8 @@ class CosPowerAutoTuner(AutoTuner):
         if nxt_val is None:
             nxt_val = 1.0
         nxt_val += self.diff
+        if almost_eq(nxt_val, self.high) or nxt_val > self.high:
+            return None, False
         if almost_eq(nxt_val, 1.0):
             nxt_val = None
         return {self.key: nxt_val}, True
@@ -319,7 +327,7 @@ class CosPowerAutoTuner(AutoTuner):
         if prev_val is None:
             prev_val = 1.0
         prev_val -= self.diff
-        if almost_eq(prev_val, 0.0):
+        if almost_eq(prev_val, self.low) or prev_val < self.low:
             return None, False
         if almost_eq(prev_val, 1.0):
             prev_val = None
@@ -344,7 +352,10 @@ class LRPowerAutoTuner(AutoTuner):
         val |= best_p
         commands.extend(cmds)
         if acc:
-            tuner = self.p_tuner(key=self.key, initial_val=val[self.key], diff=self.fine, curr=self.curr | val, f=self.f)
+            initial_val = val[self.key] or 1.0
+            low = initial_val - self.coarse
+            high = initial_val + self.coarse
+            tuner = self.p_tuner(key=self.key, initial_val=initial_val, diff=self.fine, curr=self.curr | val, f=self.f, low=low, high=high)
             best_p, cmds, acc = tuner.optimize()
             val |= best_p
             commands.extend(cmds)
@@ -724,7 +735,7 @@ for default['corrected'] in ('', None):
         initial_val = 1.0
         initial_value = {key: initial_val, 'lr': default['lr']}
         tuner = LRPowerAutoTuner(
-            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, coarse=0.2, fine=0.1, curr=default, f=f)
+            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, coarse=0.3, fine=0.1, curr=default, f=f)
         power_default, final_acc = tuner.run()
 
     if not final_acc:
@@ -739,7 +750,7 @@ for default['corrected'] in ('', None):
         initial_val = 1.0
         initial_value = {key: initial_val, 'lr': default['lr']}
         tuner = LRPowerAutoTuner(
-            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, coarse=0.2, fine=0.1, curr=default, f=f)
+            factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, coarse=0.3, fine=0.1, curr=default, f=f)
         default, final_acc = tuner.run()
 
     if not final_acc:
