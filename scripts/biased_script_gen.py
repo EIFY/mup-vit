@@ -528,7 +528,7 @@ class JointCsqLRTuner(AutoTuner):
 
 # None is tombstone value, '' (empty string) is for store_true flags
 # Modified from corrected_cosine_power_comparison.sh
-default = {'corrected': '', 'ep': 90, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': None, 'wd': None, 'sign_wd': 0.00282842712474619, 'bias_c_sq': None, 'bias_wd': None, 'nesterov': '', 'cos_power': None, 'power': 1.1}
+default = {'corrected': None, 'ep': 90, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': None, 'wd': None, 'sign_wd': 0.00282842712474619, 'bias_c_sq': None, 'bias_wd': None, 'nesterov': '', 'cos_power': None, 'power': 1.1}
 
 c_sq = 0.8396893026590251
 mo, nesterov = default['momentum'], default.get('nesterov') == ''
@@ -557,8 +557,8 @@ if not final_acc:
 with open(file_prefix + "wd.sh", "w") as f:
 
     print(preface, file=f)
-    print("# Corrected WD tuning:", file=f)
-    key = 'c_sq'
+    print("# Uncorrected WD tuning:", file=f)
+    key = 'wd'
     initial_wd = default[key]
     tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
     default, final_acc = tuner.run()
