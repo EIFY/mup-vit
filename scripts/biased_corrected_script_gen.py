@@ -642,8 +642,7 @@ with open(file_prefix + "power.sh", "w") as f:
     print("# Polynomial decay power tuning:", file=f)
 
     key = 'power'
-    initial_val = 1.1
-    initial_value = {key: initial_val, 'lr': default['lr']}
+    initial_value = {key: default[key], 'lr': default['lr']}
     tuner = LRPowerAutoTuner(
         factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, coarse=0.3, fine=0.1, curr=default, f=f)
     power_default, final_acc = tuner.run()
