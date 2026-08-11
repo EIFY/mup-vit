@@ -5,7 +5,7 @@ scripts=("${scripts[@]/#/biased_}")
 
 len=${#scripts[@]}
 
-python script_gen.py
+python biased_script_gen.py
 
 while [ ! -f done ]; do
 	for ((i=0; i<$len-1; i++)); do
@@ -15,7 +15,7 @@ while [ ! -f done ]; do
 			echo "$curr -> $next"
 			bash $curr
 			rm ${scripts[*]}
-			python script_gen.py
+			python biased_script_gen.py
 			break
 		fi
 	done
