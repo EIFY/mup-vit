@@ -660,8 +660,8 @@ with open(file_prefix + "cos_power.sh", "w") as f:
 
     # Taken from corrected_cosine_power_comparison.sh
     key = 'cos_power'
-    initial_val = 0.6
-    initial_value = {key: initial_val, 'lr': default['lr'] / 2 ** 0.5}
+    initial_val = 0.8
+    initial_value = {key: initial_val, 'lr': default['lr']}
     tuner = LRPowerAutoTuner(
         factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, coarse=0.3, fine=0.1, curr=default, f=f)
     default, final_acc = tuner.run()
