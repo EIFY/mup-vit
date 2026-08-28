@@ -540,13 +540,53 @@ with open(file_prefix + "cos_power.sh", "w") as f:
 
     key = 'cos_power'
     initial_val = 0.8
-    initial_value = {key: initial_val, 'lr': default['lr']}
-    tuner = LRPowerAutoTuner(
-        factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=CosPowerAutoTuner, key=key, coarse=0.3, fine=0.1, curr=default, f=f)
+    diff = 0.1
+
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=diff, curr=default, f=f)
+
     default, final_acc = tuner.run()
 
-if not final_acc:
-    sys.exit()
+    if not final_acc:
+        sys.exit()
+
+    initial_val = default[key]
+
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.05, curr=default, f=f, low=initial_val - diff, high=initial_val + diff)
+
+    prev, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
+    # Modified from biased_bias.sh
+    c_sq = 1.1875 / math.sqrt(2)
+    lr = 0.011584472366059664 / math.sqrt(2)
+    default = {'corrected': '', 'ep': 90, 'momentum': 0.1, 'lr': lr, 'sign_lr': 0.1, 'c_sq': c_sq, 'wd': None, 'sign_wd': 0.002, 'bias_c_sq': c_sq, 'nesterov': '', 'cos_power': 0.7, 'power': None}
+    initial_val = 0.7
+
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=diff, curr=default, f=f)
+
+    default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
+    initial_val = default[key]
+
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.05, curr=default, f=f, low=initial_val - diff, high=initial_val + diff)
+
+    default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
+    keys = ['lr', 'cos_power', 'c_sq', 'bias_c_sq']
+    initial_values = [{k: d[k] for k in keys} for d in [prev, default]]
+    tuner = AutoTuner(initial_values=initial_values, curr=default, f=f)
+    default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
 
 with open(file_prefix + "power.sh", "w") as f:
 
