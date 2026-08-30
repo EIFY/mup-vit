@@ -580,48 +580,36 @@ with open(file_prefix + "cos_power.sh", "w") as f:
     if not final_acc:
         sys.exit()
 
-    keys = ['lr', 'cos_power', 'c_sq', 'bias_c_sq']
-    initial_values = [{k: d[k] for k in keys} for d in [prev, default]]
-    tuner = AutoTuner(initial_values=initial_values, curr=default, f=f)
-    default, final_acc = tuner.run()
+    lr = 0.011584472366059664 * 0.8
+    matching = {'corrected': '', 'ep': 90, 'momentum': 0.1, 'lr': lr, 'sign_lr': 0.1, 'c_sq': c_sq, 'wd': None, 'sign_wd': 0.002, 'bias_c_sq': c_sq, 'nesterov': '', 'cos_power': 0.8, 'power': None}
+    initial_val = 0.8
+
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=diff, curr=matching, f=f)
+
+    matching, final_acc = tuner.run()
 
     if not final_acc:
         sys.exit()
 
-with open(file_prefix + "power.sh", "w") as f:
+    initial_val = matching[key]
 
-    print(preface, file=f)
-    print("# Polynomial decay power tuning:", file=f)
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.05, curr=matching, f=f, low=initial_val - diff, high=initial_val + diff)
 
-    power_default = dict(default)
+    matching, final_acc = tuner.run()
 
-    # Reset fancy schedule
-    power_default['cos_power'] = power_default['power'] = None
+    if not final_acc:
+        sys.exit()
 
-    key = 'power'
-    initial_val = 1.1
-    initial_value = {key: initial_val, 'lr': default['lr']}
-    tuner = LRPowerAutoTuner(
-        factor=2**0.5, initial_value=initial_value, comp=0.5, p_tuner=PowerAutoTuner, key=key, coarse=0.3, fine=0.1, curr=power_default, f=f)
-    power_default, final_acc = tuner.run()
-
-if not final_acc:
-    sys.exit()
-
-with open(file_prefix + "cosine_power_comparison.sh", "w") as f:
-
-    print(preface, file=f)
-    print("# Cosine vs. polynomial decay:", file=f)
-
-    initial_values = [{'cos_power': default['cos_power'], 'lr': default['lr']}]
-    initial_values.append({'power': power_default['power'], 'lr': power_default['lr']})
-    default['cos_power'] = None
-
+    keys = ['lr', 'cos_power', 'c_sq', 'bias_c_sq']
+    initial_values = [{k: d[k] for k in keys} for d in [prev, default, matching]]
     tuner = AutoTuner(initial_values=initial_values, curr=default, f=f)
     default, final_acc = tuner.run()
 
 if not final_acc:
     sys.exit()
+
+pathlib.Path(file_prefix + "power.sh").touch()
+pathlib.Path(file_prefix + "cosine_power_comparison.sh").touch()
 
 with open(file_prefix + "lr.sh", "w") as f:
 
