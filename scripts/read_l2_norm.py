@@ -1,4 +1,5 @@
-import collections, decimal, math, os, pathlib, statistics, sys, torch, pickle
+import collections, decimal, math, os, pathlib, statistics, sys, torch, pickle, collections, statistics
+import matplotlib.pyplot as plt
 
 IMAGENET_TRAIN_SIZE = 1281167
 BS = 4096
@@ -67,10 +68,10 @@ def prev_mo(mo):
 
 # None is tombstone value, '' (empty string) is for store_true flags
 default = {'corrected': '', 'ep': 90, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.09999999999999999, 'c_sq': 0.8396893026590251, 'wd': None, 'sign_wd': 0.00282842712474619, 'nesterov': '', 'cos_power': None, 'power': None}
+filename = 'vit_l2_norms.pkl'
 
-curr = dict(default)
-mo = curr['momentum']
-lr_eff = curr['lr'] * lr_factor(mo, nesterov=curr.get('nesterov') == '')
+mo = default['momentum']
+lr_eff = default['lr'] * lr_factor(mo, nesterov=default.get('nesterov') == '')
 mo = decimal.Decimal(str(mo))  
 mos = collections.deque([mo])
 while len(mos) < 3 and mos[-1] < 1:
@@ -78,17 +79,66 @@ while len(mos) < 3 and mos[-1] < 1:
 while len(mos) < 6:
     mos.appendleft(prev_mo(mos[0]))
 
-res = {}
+def read_l2_norm(mos, default):
+    curr = dict(default)
+    res = {}
+    factors = [0.5, 2**-0.5, 1., 2**0.5, 2.0]
+    for curr['nesterov'] in ('', None):
+        for curr['momentum'] in mos:
+            for factor in factors:
+                base_lr = lr_eff / lr_factor(float(curr['momentum']), nesterov=curr.get('nesterov') == '')
+                curr['lr'] = factor * base_lr
+                res[run_name('scion-t212', curr)] = l2_norms(read_last(curr))
 
+    with open(filename, 'wb') as file:
+        pickle.dump(res, file)
+    return res
+
+if os.path.exists(filename):
+    with open(filename, 'rb') as file:
+        res = pickle.load(file)
+else:
+    res = read_l2_norm(mos, default)
+
+
+regular = {k: collections.defaultdict(list) for k in ['hidden', 'output']}
+nesterov = {k: collections.defaultdict(list) for k in ['hidden', 'output']}
+
+curr = dict(default)
 factors = [0.5, 2**-0.5, 1., 2**0.5, 2.0]
 for curr['nesterov'] in ('', None):
     for curr['momentum'] in mos:
         for factor in factors:
             base_lr = lr_eff / lr_factor(float(curr['momentum']), nesterov=curr.get('nesterov') == '')
             curr['lr'] = factor * base_lr
-            res[run_name('scion-t212', curr)] = l2_norms(read_last(curr))
+            key = run_name('scion-t212', curr)
+            d = regular if curr['nesterov'] is None else nesterov
+            for k, v in res[key].items():
+                d[k][float(curr['momentum'])].append(v)
 
-print(res)
+fig = plt.figure()
+ax = plt.gca()
 
-with open('vit_l2_norms.pkl', 'wb') as file:
-    pickle.dump(res, file)
+for label, d, c in [('regular', regular, 'tab:blue'), ('Nesterov', nesterov, 'tab:orange')]:
+    for k, v in d.items():
+        x = v.keys()
+        avg = [statistics.fmean(l) for l in v.values()]
+        std = [statistics.stdev(l) for l in v.values()]
+        ls = '--' if k == 'output' else '-'
+        ax.errorbar(x, avg, yerr=std, linestyle=ls, color=c, label=label)
+
+handles, labels = ax.get_legend_handles_labels()
+handles = [h[0] for h in handles]
+leg1 = ax.legend(handles[::2], labels[::2], bbox_to_anchor=(0.23, 1.0))
+ax.add_artist(leg1)
+leg2 = ax.legend(handles[:2], ['hidden', 'output'], bbox_to_anchor=(0.43, 1.0))
+for line in leg2.legend_handles:
+    line.set_color('black')
+
+ax.set_xscale('log')
+
+ax.set(xlabel='Momentum')
+ax.set(ylabel='L2 norm')
+
+plt.tight_layout()
+plt.savefig('l2_norm.png')
