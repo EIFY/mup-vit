@@ -1,6 +1,8 @@
 import collections, decimal, math, os, pathlib, statistics, sys, torch, pickle, collections, statistics
 import matplotlib.pyplot as plt
 
+plt.rcParams['text.usetex'] = True
+
 IMAGENET_TRAIN_SIZE = 1281167
 BS = 4096
 
@@ -137,8 +139,8 @@ for line in leg2.legend_handles:
 
 ax.set_xscale('log')
 
-ax.set(xlabel='Momentum')
-ax.set(ylabel='L2 norm')
+ax.set(xlabel='Momentum $\\alpha$')
+ax.set(ylabel='$L_2$ norm')
 
 plt.tight_layout()
 plt.savefig('l2_norm.png')
