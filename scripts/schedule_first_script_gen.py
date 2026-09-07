@@ -11,7 +11,7 @@ def read_best(p):
 
 # def make_up(curr, repeat, acc, done=True, path='logs/'):
 #     """For testing sandbox only!!!"""
-#     name = run_name('scion-t212', curr, repeat=repeat)
+#     name = run_name('', curr, repeat=repeat)
 #     ckpt_path = os.path.join(path, name, 'checkpoints')
 #     pathlib.Path(ckpt_path).mkdir(parents=True, exist_ok=True)
 #     best_ckpt = os.path.join(ckpt_path, 'model_best.pth.tar')
@@ -44,7 +44,7 @@ BEST_CKPT = 'checkpoints/model_best.pth.tar'
 prefix = "NUMEXPR_MAX_THREADS=$N_THREADS $PYTHON $MUPVIT_MAIN /data/ImageNet/ "
 
 def run_name(opt, d, repeat=0):
-    l = [opt]
+    l = [opt] if opt else []
     for k, v in d.items():
         if v is not None:
             l.append(k)
@@ -70,7 +70,7 @@ def flags(d):
 fixed = dict(workers="$N_WORKERS", multiprocessing_distributed='', batch_size="$BS", mlp_head='', torchvision_inception_crop='', grad_clip_norm=100000000., report_to='wandb', print_freq=25)
 
 
-def test_params(curr, fixed=fixed, opt='scion-t212', prefix=prefix, path='logs/', repeat=0):
+def test_params(curr, fixed=fixed, opt='', prefix=prefix, path='logs/', repeat=0):
     name = run_name(opt, curr, repeat=repeat)
     step = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
     path_name = os.path.join(path, name)
@@ -88,7 +88,7 @@ def test_params(curr, fixed=fixed, opt='scion-t212', prefix=prefix, path='logs/'
     return command, accuracy
 
 
-def read_repeats(curr, fixed=fixed, opt='scion-t212', prefix=prefix, path='logs/', repeats=N_REPEATS):
+def read_repeats(curr, fixed=fixed, opt='', prefix=prefix, path='logs/', repeats=N_REPEATS):
     commands, acc = [], []
     for repeat in range(repeats):
         command, accuracy = test_params(curr=curr, repeat=repeat)
