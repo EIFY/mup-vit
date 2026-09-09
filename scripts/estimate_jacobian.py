@@ -4,6 +4,7 @@ import argparse
 import functools
 import math
 import os
+import pickle
 import random
 import shutil
 import time
@@ -521,6 +522,26 @@ def weight_decay_param(n, p):
     return p.ndim >= 2 and n.endswith('weight')
 
 
+# None is tombstone value, '' (empty string) is for store_true flags
+# Best hyperparameters w/ cosine LR schedule, taken from corrected_c_sq_lr.sh
+default = {'corrected': '', 'ep': 90, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': 0.8396893026590251, 'wd': None, 'sign_wd': 0.00282842712474619, 'nesterov': '', 'cos_power': None, 'power': None}
+
+
+def run_name(opt, d, repeat=0):
+    l = [opt]
+    for k, v in d.items():
+        if v is not None:
+            l.append(k)
+            if v != '':
+                if type(v) is float:
+                    v = f"{v:.3g}"
+                else:
+                    v = str(v)
+                l.append(v)
+    l.append(str(repeat))
+    return '-'.join(l)
+
+
 def main_worker(gpu, args):
     global best_acc1
     args.gpu = gpu
@@ -620,29 +641,45 @@ def main_worker(gpu, args):
         num_workers=args.workers, pin_memory=True, sampler=val_sampler,
         multiprocessing_context='spawn', prefetch_factor=1)
 
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
-            args.start_step = checkpoint['step']
-            best_acc1 = checkpoint['best_acc1']
-            original_model.load_state_dict(checkpoint['state_dict'])
-            print("=> loaded checkpoint '{}' (step {})"
-                  .format(args.resume, checkpoint['step']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
-
-    count, hidden = norm_info(original_model)
-    print(f"{count=}, {hidden ** 0.5=}")
-
     print('Compiling model...')
 
     # Inductor doesn't support MPS yet (https://github.com/pytorch/pytorch/issues/125254)
     model = torch.compile(model, backend="aot_eager" if device.type == 'mps' else "inductor")
 
-    jacobian = estimate_jacobian(val_loader, model, device, args)
-    print(f"{jacobian=}")
+    curr = dict(default)
+    factors = [0.5, 2**-0.5, 1., 2**0.5, 2.0]
+    opt = 'scion-t212'
+    res = {}
+
+    prefix = "module."
+    pre_len = len(prefix)
+    for lr_f in factors:
+        for c_sq_f in factors:
+            curr['lr'] = lr_f * math.sqrt(c_sq_f) * default['lr']
+            curr['c_sq'] = c_sq_f * default['c_sq']
+            name = run_name(opt, curr)
+            args.resume = f"logs/{name}/checkpoints/model_step_28151.pth.tar"
+            print("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
+            args.start_step = checkpoint['step']
+            best_acc1 = checkpoint['best_acc1']
+            state_dict = checkpoint['state_dict']
+            if any(k.startswith(prefix) for k in state_dict):  # Old code DPP model state_dict
+                state_dict = {k[pre_len:]: v for k, v in state_dict.items()}
+            original_model.load_state_dict(state_dict)
+            print("=> loaded checkpoint '{}' (step {})"
+                  .format(args.resume, checkpoint['step']))
+
+            count, hidden = norm_info(original_model)
+            hidden **= 0.5
+            print(f"{count=}, {hidden=}")
+            jacobian = estimate_jacobian(val_loader, model, device, args)
+            print(f"{jacobian=}")
+            res[name] = dict(hidden=hidden, jacobian=jacobian)
+
+    filename = 'vit_jacobian_norms.pkl'
+    with open(filename, 'wb') as file:
+        pickle.dump(res, file)
 
     if args.distributed or args.ngpus_per_node > 1:
         dist.destroy_process_group()
