@@ -349,13 +349,14 @@ file_prefix = 'unnormed_'
 with open(file_prefix + "wd.sh", "w") as f:
 
     print(preface, file=f)
-    print("# Uncorrected WD tuning:", file=f)
-    key = 'wd'
-    initial_wd = default[key]
-    tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
-    default, final_acc = tuner.run()
+    print("# Compared to uncorrected WD:", file=f)
+    corrected_default['ep'] = default['ep'] = 300
+    l = [test_params(curr=d) for d in [corrected_default, default]]
+    cmds, accs = zip(*l)
+    for cmd in cmds:
+        print(cmd, file=f)
 
-if not final_acc:
+if not all(accs):
     sys.exit()
 
 pathlib.Path('unnormed_done').touch()
