@@ -173,6 +173,7 @@ class SimpleVisionTransformer(nn.Module):
         register: int = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.RMSNorm, eps=1e-6, elementwise_affine=False),
         bias: bool = True,
+        head_bias: bool = True,
     ):
         super().__init__()
         torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
@@ -219,11 +220,11 @@ class SimpleVisionTransformer(nn.Module):
 
         heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
         if representation_size is None:
-            heads_layers["head"] = nn.Linear(hidden_dim, num_classes, bias=False)
+            heads_layers["head"] = nn.Linear(hidden_dim, num_classes, bias=head_bias)
         else:
             heads_layers["pre_logits"] = nn.Linear(hidden_dim, representation_size, bias=bias)
             heads_layers["act"] = nn.Tanh()
-            heads_layers["head"] = nn.Linear(representation_size, num_classes, bias=False)
+            heads_layers["head"] = nn.Linear(representation_size, num_classes, bias=head_bias)
 
         self.heads = nn.Sequential(heads_layers)
 

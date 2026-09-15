@@ -98,6 +98,8 @@ parser.add_argument('--wd', '--weight-decay', default=0.08, type=float)
 parser.add_argument('--c-sq', default=1.1875, type=float,
                     help='normalized steady-state norm squared for spectral parameters.')
 parser.add_argument('--bias-wd', default=math.inf, type=float)
+parser.add_argument('--hb-wd', default=math.inf, type=float,
+                    help='head bias weight decay')
 parser.add_argument('--bias-c-sq', default=0., type=float)
 parser.add_argument('--sign-weight-decay', '--sign-wd', default=0.004, type=float,
                     help='sign weight decay (default: 0.004)')
@@ -256,6 +258,7 @@ def main_worker(gpu, args):
         args.corrected and args.bias_c_sq == 0.) or (
         not args.corrected and args.bias_wd == math.inf)
     args.bias = not zero_bias_norm
+    args.head_bias = (args.hb_wd < math.inf)
 
     # Create model
     # We keep the original model and use it to save checkpoints or access submodules since:
@@ -274,6 +277,7 @@ def main_worker(gpu, args):
         pool_type=args.pool_type,
         register=args.register,
         bias=args.bias,
+        head_bias=args.head_bias,
     )
 
     args.total_batch_size = args.batch_size
@@ -301,8 +305,9 @@ def main_worker(gpu, args):
 
     patchifier = []
     linear = []
-    bias = []
     output = []
+    head_bias = []
+    bias = []
 
     for t in model.named_parameters():
         n, p = t
@@ -312,6 +317,8 @@ def main_worker(gpu, args):
             output.append(p)
         elif p.ndim >= 2:
             linear.append(p)
+        elif n.endswith("heads.head.bias"):
+            head_bias.append(p)
         else:
             bias.append(p)
 
@@ -328,12 +335,6 @@ def main_worker(gpu, args):
         'c_sq': args.c_sq,
         'weight_decay': args.wd,
     }, {
-        'params': bias,
-        'norm': 'BiasRMS',
-        'corrected': args.corrected,
-        'c_sq': args.bias_c_sq,
-        'weight_decay': args.bias_wd,
-    }, {
         'params': output,
         'norm': 'Sign',
         'norm_kwargs': {'zero_init': True},
@@ -341,6 +342,22 @@ def main_worker(gpu, args):
         'corrected': False,
         'weight_decay': args.sign_weight_decay,
     }]
+
+    if bias:
+        optim_groups.append({
+            'params': bias,
+            'norm': 'BiasRMS',
+            'corrected': args.corrected,
+            'c_sq': args.bias_c_sq,
+            'weight_decay': args.bias_wd,
+        })
+    if head_bias:
+        optim_groups.append({
+            'params': head_bias,
+            'norm': 'BiasRMS',
+            'corrected': False,
+            'weight_decay': args.hb_wd,
+        })
 
     defaults = dict(lr=args.lr, momentum=args.momentum, nesterov=args.nesterov, cautious=args.cautious)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
@@ -559,7 +576,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         # do SGD step
         l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
         if args.wandb and is_primary(args):
-            head_grads_sq = original_model.heads.head.weight.grad.square().sum().item()
+            head = original_model.heads.head
+            head_grads_sq = sum(p.grad.square().sum().item() for p in head.parameters())
         optimizer.step()
         optimizer.zero_grad()
 
@@ -574,7 +592,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
 
                     with torch.no_grad():
                         l2_params = sum(p.square().sum().item() for p in model.parameters())
-                        l2_head_params = original_model.heads.head.weight.square().sum().item()
+                        l2_head_params = sum(p.square().sum().item() for p in head.parameters())
 
                     group = optimizer.param_groups[0]
                     lr, momentum = group['lr'], group['momentum']
