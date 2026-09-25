@@ -4,7 +4,7 @@ scripts=("corrected_regular_mo_training_budgets.sh" "regular_mo_training_budgets
 
 len=${#scripts[@]}
 
-python head_bias_script_gen.py
+python regular_mo_script_gen.py
 
 while [ ! -f regular_mo_done ]; do
 	for ((i=0; i<$len-1; i++)); do
