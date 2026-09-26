@@ -399,6 +399,7 @@ parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
+parser.add_argument('--repeat', default=3, type=int)
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--world-size', default=-1, type=int,
@@ -691,18 +692,19 @@ def estimate_jacobian(val_loader, model, device, args):
     torch.cuda.empty_cache()
     squared_total = 0.0
     n = 0
-    # generator moves data to the same device as model
-    gen = (b for images, target in val_loader for b in chunk(args.prefetch_factor, device, images, target))
-    for images, target in gen:
-        for img, _ in chunk(args.accum_freq, device, images, target):
-            # compute output
-            loss = model(img)
-            loss.backward()
-            # Hutchinson's trace estimator for the Frobenius norm of the (img.shape[0] * args.hidden_dim, n_of_paramters) Jacobian matrix
-            l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm).item()
-            squared_total += l2_grads ** 2
-            n += img.size(0)
-            model.zero_grad()
+    for _ in range(args.repeat):
+        # generator moves data to the same device as model
+        gen = (b for images, target in val_loader for b in chunk(args.prefetch_factor, device, images, target))
+        for images, target in gen:
+            for img, _ in chunk(args.accum_freq, device, images, target):
+                # compute output
+                loss = model(img)
+                loss.backward()
+                # Hutchinson's trace estimator for the Frobenius norm of the (img.shape[0] * args.hidden_dim, n_of_paramters) Jacobian matrix
+                l2_grads = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm).item()
+                squared_total += l2_grads ** 2
+                n += img.size(0)
+                model.zero_grad()
     print(f"{n=}")
     # Mean (args.hidden_dim, n_of_paramters) Jacobian matrix Frobenius norm
     jacobian = math.sqrt(squared_total / n)
