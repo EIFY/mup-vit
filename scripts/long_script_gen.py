@@ -565,7 +565,8 @@ class HiddenWDTuner(AutoTuner):
 # None is tombstone value, '' (empty string) is for store_true flags
 default = {'corrected': None, 'ep': 300, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': None, 'wd': 0.048831350023898414, 'sign_wd': 0.002, 'bias_c_sq': None, 'bias_wd': 0.048831350023898414, 'nesterov': '', 'cos_power': None, 'power': None}  # Uncorrected, biased, cosine LR schedule
 
-high_wd = 0.08
+wd = 0.048831350023898414
+high_wd = wd * 2 ** .5
 
 default['wd'] = default['bias_wd'] = high_wd
 
