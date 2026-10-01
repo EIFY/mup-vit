@@ -562,32 +562,30 @@ class HiddenWDTuner(AutoTuner):
 
 
 # None is tombstone value, '' (empty string) is for store_true flags
-default = {'corrected': None, 'ep': 300, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': None, 'wd': 0.048831350023898414, 'sign_wd': 0.002, 'bias_c_sq': None, 'bias_wd': 0.048831350023898414, 'nesterov': '', 'cos_power': None, 'power': None}  # Uncorrected, biased, cosine LR schedule
+defaults = [
+    {'corrected': None, 'ep': 300, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': None, 'wd': 0.048831350023898414, 'sign_wd': 0.002, 'bias_c_sq': None, 'bias_wd': 0.048831350023898414, 'nesterov': '', 'cos_power': None, 'power': None},  # Uncorrected, biased, cosine LR schedule
+    {'corrected': None, 'ep': 300, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': None, 'wd': 0.048831350023898414, 'sign_wd': 0.00282842712474619, 'nesterov': '', 'cos_power': None, 'power': None},
+]
+
+accses = [[0.79828, 0.79952, 0.79436], [0.79764, 0.79686, 0.79812]]
+
+filenames = ["bias_wd.sh", "wd.sh"]
+
+keyses = [('wd', 'bias_wd'), ('wd',)]
 
 file_prefix = 'long_'
 
-with open(file_prefix + "bias_wd.sh", "w") as f:
-    accs = [0.79828, 0.79952, 0.79436]
-    # These data actually exist: Add prefix "scion-t212-" to see them
-    for repeat, acc in enumerate(accs):
-        make_up(default, repeat, acc)
-    print(preface, file=f)
-    print("# Both hidden wd:", file=f)
-    tuner = HiddenWDTuner(2 ** 0.5, default, f)
-    default, final_acc = tuner.run()
+for default, accs, filename, keys in zip(defaults, accses, filenames, keyses):
+    with open(file_prefix + filename, "w") as f:
+        # These data actually exist: Add prefix "scion-t212-" to see them
+        for repeat, acc in enumerate(accs):
+            make_up(default, repeat, acc)
+        print(preface, file=f)
+        tuner = HiddenWDTuner(2 ** 0.5, default, f, keys=keys)
+        default, final_acc = tuner.run()
 
-if not final_acc:
-    sys.exit()
-
-with open(file_prefix + "wd.sh", "w") as f:
-    default['bias_wd'] = None
-    print(preface, file=f)
-    print("# Just wd:", file=f)
-    tuner = HiddenWDTuner(2 ** 0.5, default, f, keys=('wd',))
-    default, final_acc = tuner.run()
-
-if not final_acc:
-    sys.exit()
+    if not final_acc:
+        sys.exit()
 
 pathlib.Path(file_prefix + 'done').touch()
 print('Done!')
