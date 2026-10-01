@@ -9,18 +9,17 @@ def read_best(p):
     return ckpt['best_acc1']
 
 
-# def make_up(curr, repeat, acc, done=True, path='logs/'):
-#     """For testing sandbox only!!!"""
-#     name = run_name('', curr, repeat=repeat)
-#     ckpt_path = os.path.join(path, name, 'checkpoints')
-#     pathlib.Path(ckpt_path).mkdir(parents=True, exist_ok=True)
-#     best_ckpt = os.path.join(ckpt_path, 'model_best.pth.tar')
-#     ckpt = {'best_acc1': acc}
-#     torch.save(ckpt, best_ckpt)
-#     if done:
-#         step = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
-#         last_ckpt = os.path.join(ckpt_path, f'model_step_{step}.pth.tar')
-#         torch.save(ckpt, last_ckpt)
+def make_up(curr, repeat, acc, done=True, path='logs/'):
+    name = run_name('', curr, repeat=repeat)
+    ckpt_path = os.path.join(path, name, 'checkpoints')
+    pathlib.Path(ckpt_path).mkdir(parents=True, exist_ok=True)
+    best_ckpt = os.path.join(ckpt_path, 'model_best.pth.tar')
+    ckpt = {'best_acc1': acc}
+    torch.save(ckpt, best_ckpt)
+    if done:
+        step = round(IMAGENET_TRAIN_SIZE * curr['ep'] / BS)
+        last_ckpt = os.path.join(ckpt_path, f'model_step_{step}.pth.tar')
+        torch.save(ckpt, last_ckpt)
 
 
 N_REPEATS = 3
@@ -91,7 +90,7 @@ def test_params(curr, fixed=fixed, opt='', prefix=prefix, path='logs/', repeat=0
 def read_repeats(curr, fixed=fixed, opt='', prefix=prefix, path='logs/', repeats=N_REPEATS):
     commands, acc = [], []
     for repeat in range(repeats):
-        command, accuracy = test_params(curr=curr, repeat=repeat)
+        command, accuracy = test_params(curr=curr, repeat=repeat, opt=opt)
         commands.append(command)
         acc.append(accuracy)
     return commands, [a for a in acc if a is not None]
@@ -553,27 +552,25 @@ class HiddenWDTuner(AutoTuner):
 
     def next_value(self):
         curr = self.values[-1]
-        next_val = {k: v * self.factor for k, v in curr.items}
+        next_val = {k: v * self.factor for k, v in curr.items()}
         return next_val, True
 
     def prev_value(self):
         curr = self.values[0]
-        prev_val = {k: v / self.factor for k, v in curr.items}
+        prev_val = {k: v / self.factor for k, v in curr.items()}
         return prev_val, True
 
 
 # None is tombstone value, '' (empty string) is for store_true flags
 default = {'corrected': None, 'ep': 300, 'momentum': 0.1, 'lr': 0.011584472366059664, 'sign_lr': 0.1, 'c_sq': None, 'wd': 0.048831350023898414, 'sign_wd': 0.002, 'bias_c_sq': None, 'bias_wd': 0.048831350023898414, 'nesterov': '', 'cos_power': None, 'power': None}  # Uncorrected, biased, cosine LR schedule
 
-wd = 0.048831350023898414
-high_wd = wd * 2 ** .5
-
-default['wd'] = default['bias_wd'] = high_wd
-
 file_prefix = 'long_'
 
 with open(file_prefix + "bias_wd.sh", "w") as f:
-
+    accs = [0.79828, 0.79952, 0.79436]
+    # These data actually exist: Add prefix "scion-t212-" to see them
+    for repeat, acc in enumerate(accs):
+        make_up(default, repeat, acc)
     print(preface, file=f)
     print("# Both hidden wd:", file=f)
     tuner = HiddenWDTuner(2 ** 0.5, default, f)
