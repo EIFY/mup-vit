@@ -577,40 +577,25 @@ with open(file_prefix + "lr.sh", "w") as f:
     print(preface, file=f)
     print("# LR tuning:", file=f)
 
-    key = 'lr'
-    initial_lr = default[key]
-    tuner = LRAutoTuner(key, initial_lr, 2 ** 0.25, default, f)
-    lr_default, final_acc = tuner.run()
+    key = 'cos_power'
+    initial_val = 0.8
+    diff = 0.1
 
-if not final_acc:
-    sys.exit()
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=diff, curr=default, f=f)
 
-with open(file_prefix + "wd.sh", "w") as f:
-
-    print(preface, file=f)
-    print("# Corrected WD tuning:", file=f)
-    
-    key = 'c_sq'
-    initial_wd = default[key] * 2 ** -0.5
-    tuner = LRAutoTuner(key, initial_wd, 2 ** 0.5, default, f)
     default, final_acc = tuner.run()
 
-if not final_acc:
-    sys.exit()
+    if not final_acc:
+        sys.exit()
 
-with open(file_prefix + "scale.sh", "w") as f:
+    initial_val = default[key]
 
-    print(preface, file=f)
-    print("# Does scale matter?", file=f)
-    
-    keys = ['lr', 'c_sq']
-    initial_values = [{k: d[k] for k in keys} for d in [default, lr_default]]
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.05, curr=default, f=f, low=initial_val - diff, high=initial_val + diff)
 
-    tuner = AutoTuner(initial_values=initial_values, curr=default, f=f)
     default, final_acc = tuner.run()
 
-if not final_acc:
-    sys.exit()
+    if not final_acc:
+        sys.exit()
 
 with open(file_prefix + "training_budgets.sh", "w") as f:
 
