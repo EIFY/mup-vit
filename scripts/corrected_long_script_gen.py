@@ -597,6 +597,35 @@ with open(file_prefix + "lr.sh", "w") as f:
     if not final_acc:
         sys.exit()
 
+    off_grid = dict(default)
+    off_grid['lr'] *= 0.9
+    initial_val = 0.7
+    diff = 0.1
+
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=diff, curr=off_grid, f=f)
+
+    off_grid, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
+    initial_val = off_grid[key]
+
+    tuner = CosPowerAutoTuner(key=key, initial_val=initial_val, diff=0.05, curr=off_grid, f=f, low=initial_val - diff, high=initial_val + diff)
+
+    off_grid, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
+    keys = ['lr', key]
+    initial_values = [{k: d[k] for k in keys} for d in [default, off_grid]]
+    tuner = AutoTuner(initial_values=initial_values, curr=default, f=f)
+    default, final_acc = tuner.run()
+
+    if not final_acc:
+        sys.exit()
+
 with open(file_prefix + "training_budgets.sh", "w") as f:
 
     print(preface, file=f)
