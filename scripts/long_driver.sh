@@ -1,6 +1,6 @@
 #!/bin/bash
 
-scripts=("long_bias_wd.sh" "long_wd.sh" "long_done")
+scripts=("long_bias_wd.sh" "long_bias_training_budgets.sh" "long_wd.sh" "long_training_budgets.sh" "long_done")
 
 len=${#scripts[@]}
 

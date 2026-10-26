@@ -569,14 +569,12 @@ defaults = [
 
 accses = [[0.79828, 0.79952, 0.79436], [0.79764, 0.79686, 0.79812]]
 
-filenames = ["bias_wd.sh", "wd.sh"]
-
 keyses = [('wd', 'bias_wd'), ('wd',)]
 
-file_prefix = 'long_'
+file_prefixes = ['long_bias_', 'long_']
 
-for default, accs, filename, keys in zip(defaults, accses, filenames, keyses):
-    with open(file_prefix + filename, "w") as f:
+for default, accs, file_prefix, keys in zip(defaults, accses, file_prefixes, keyses):
+    with open(file_prefix + 'wd.sh', "w") as f:
         # These data actually exist: Add prefix "scion-t212-" to see them
         for repeat, acc in enumerate(accs):
             make_up(default, repeat, acc)
@@ -587,5 +585,15 @@ for default, accs, filename, keys in zip(defaults, accses, filenames, keyses):
     if not final_acc:
         sys.exit()
 
-pathlib.Path(file_prefix + 'done').touch()
+    with open(file_prefix + "training_budgets.sh", "w") as f:
+
+        print(preface, file=f)
+        print("# Corrected with long budget:", file=f)
+
+        done = test_training_budgets(default=default, eps=[300], f=f)
+
+    if not done:
+        sys.exit()
+
+pathlib.Path(file_prefixes[1] + 'done').touch()
 print('Done!')
