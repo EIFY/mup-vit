@@ -626,6 +626,18 @@ with open(file_prefix + "lr.sh", "w") as f:
     if not final_acc:
         sys.exit()
 
+with open(file_prefix + "c_sq_lr.sh", "w") as f:
+    factor = 2.
+    default['c_sq'] /= factor
+    default['lr'] /= math.sqrt(factor)
+    print(preface, file=f)
+    print("# Joint c_sq and lr tuning:", file=f)
+    tuner = JointCsqLRTuner(factor=factor, curr=default, f=f)
+    default, final_acc = tuner.run()
+
+if not final_acc:
+    sys.exit()
+
 with open(file_prefix + "training_budgets.sh", "w") as f:
 
     print(preface, file=f)

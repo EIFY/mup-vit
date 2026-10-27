@@ -1,6 +1,6 @@
 #!/bin/bash
 
-scripts=("lr.sh" "training_budgets.sh" "done")
+scripts=("lr.sh" "c_sq_lr.sh" "training_budgets.sh" "done")
 scripts=("${scripts[@]/#/corrected_long_}")
 
 len=${#scripts[@]}
