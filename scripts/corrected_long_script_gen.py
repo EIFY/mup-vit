@@ -627,7 +627,7 @@ with open(file_prefix + "lr.sh", "w") as f:
         sys.exit()
 
 with open(file_prefix + "c_sq_lr.sh", "w") as f:
-    factor = 2.
+    factor = math.sqrt(2.)
     default['c_sq'] /= factor
     default['lr'] /= math.sqrt(factor)
     print(preface, file=f)
