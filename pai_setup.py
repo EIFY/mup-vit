@@ -209,8 +209,8 @@ def check_args(parser, args):
         parser.error(f'--pai-layers must be in [0, {args.num_layers})')
     if args.distributed or args.ngpus_per_node > 1:
         parser.error('PAI runs support a single GPU only; pass --gpu 0')
-    if args.resume:
-        parser.error('--resume is not supported with PAI runs')
+    if args.resume and (args.pai_resume or args.pai_init):
+        parser.error('--resume continues a PAI run; it excludes --pai-resume and --pai-init')
     if args.accum_freq != 1:
         # PAI stores one set of dendrite outputs and neuron errors per optimizer step.
         parser.error('PAI runs need --accum-freq 1')
@@ -296,6 +296,30 @@ def load_resume(model, path):
           f"epoch {tracker_value(string, 'num_epochs_run')}, "
           f"last improved epoch {tracker_value(string, 'epoch_last_improved')})")
     return checkpoint
+
+
+def load_continue(model, path, args):
+    """Continue a PAI run from its own main.py checkpoint (--resume), after perforate().
+
+    The checkpoint may have dendrites: PAI's load_net_from_dict rebuilds them from the saved
+    cycle count, then the tracker is restored as for --pai-resume. Only neuron-phase ('n')
+    checkpoints: in a dendrite phase Perforated Backpropagation keeps candidate statistics that
+    the state_dict does not hold. Returns (model, checkpoint) for restore_training.
+    """
+    checkpoint = torch.load(path, map_location='cpu', weights_only=True)
+    string = tracker_string(checkpoint)
+    mode = tracker_value(string, 'mode')
+    if mode != 'n':
+        raise ValueError(f"--resume needs a PAI checkpoint saved in a neuron phase; '{path}' is in "
+                         f"mode {mode}")
+    loaded = UPA.load_net_from_dict(model, checkpoint['state_dict'])
+    model = loaded if loaded is not None else model
+    restore_tracker(model, checkpoint, args)
+    print(f"=> continuing PAI run from '{path}' (step {checkpoint['step']}, "
+          f"{tracker_value(string, 'num_dendrites_added')} dendrite sets, "
+          f"epoch {tracker_value(string, 'num_epochs_run')}, "
+          f"last improved epoch {tracker_value(string, 'epoch_last_improved')})")
+    return model, checkpoint
 
 
 def restore_tracker(model, checkpoint, args):

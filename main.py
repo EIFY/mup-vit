@@ -117,7 +117,9 @@ parser.add_argument("--randaug-magnitude", default=10, type=int)
 parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
+                    help='path to latest checkpoint (default: none). For PAI runs: this run\'s own '
+                         'checkpoint from a neuron phase (dendrites allowed); keep --name and the '
+                         'PAI flags of the original run to continue its log directory')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--world-size', default=-1, type=int,
@@ -155,6 +157,9 @@ parser.add_argument("--wandb-history-from", default='', type=str, metavar='RUN_I
                     help="W&B run (same entity/project) whose logged scalars up to the resume step "
                          "are copied into this run first, e.g. the run a --pai-resume checkpoint "
                          "came from. W&B's own run forking is a private preview feature.")
+parser.add_argument("--wandb-name", default='', type=str, metavar='RUN_ID',
+                    help="W&B run name and id (default: --name). With --resume and "
+                         "--wandb-history-from, continues a run's log directory under a new W&B run.")
 parser.add_argument("--wandb-notes", default='', type=str,
                     help="Notes if logging with wandb")
 pai_setup.add_arguments(parser)
@@ -254,6 +259,8 @@ def main():
             args.pai_init = os.path.abspath(args.pai_init)
         if args.pai_resume:
             args.pai_resume = os.path.abspath(args.pai_resume)
+        if args.resume:
+            args.resume = os.path.abspath(args.resume)
 
     # get the name of the experiments
     if args.name is None:
@@ -328,6 +335,7 @@ def main_worker(gpu, args):
         pool_type=args.pool_type,
         register=args.register,
     )
+    pai_resume = None
     if args.pai:
         if args.pai_init:
             pai_setup.load_init(model, args.pai_init)
@@ -338,6 +346,11 @@ def main_worker(gpu, args):
         original_model = model = pai_setup.perforate(model, args)
         if args.pai_resume:
             pai_setup.restore_tracker(model, pai_resume, args)
+        elif args.resume:
+            # Continue this PAI run (dendrites included) from its own checkpoint.
+            model, pai_resume = pai_setup.load_continue(model, args.resume, args)
+            original_model = model
+            best_acc1 = pai_resume['best_acc1']
 
     wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
     non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
@@ -503,11 +516,11 @@ def main_worker(gpu, args):
             scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
 
     scaler = torch.amp.GradScaler('cuda', enabled=args.amp)
-    if args.pai and args.pai_resume:
+    if pai_resume is not None:
         pai_setup.restore_training(optimizer, scheduler, scaler, pai_resume, args)
 
-    # optionally resume from a checkpoint
-    if args.resume:
+    # optionally resume from a checkpoint (PAI runs resume above)
+    if args.resume and not args.pai:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
@@ -532,8 +545,8 @@ def main_worker(gpu, args):
             wandb.login(key=wandb_token)
         wandb.init(
             project=os.environ.get('WANDB_PROJECT'),
-            name=args.name,
-            id=args.name,
+            name=args.wandb_name or args.name,
+            id=args.wandb_name or args.name,
             notes=args.wandb_notes,
             tags=[],
             resume='auto',
@@ -588,7 +601,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     # switch to train mode
     model.train()
     end = time.time()
-    best_acc1 = 0
+    global best_acc1  # restored by --resume; a fresh run starts at 0
     mixup = TwoHotMixUp(alpha=args.mixup_alpha, prefetch_factor=args.prefetch_factor, batch_size=args.batch_size)
 
     def train_batches():

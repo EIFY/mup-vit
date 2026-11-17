@@ -21,6 +21,12 @@
 # DENDRITE_LOSS=covariance (pb only): perforatedbp's CovarianceDendriteLoss instead of 4.0.0's
 # default, whose PB scores are always 0; adds _covloss to the run name.
 # EPOCHS is the total including the shared epochs and only a safety cap; PAI ends the run.
+# CONTINUE_RUN=<run name>: continue that run after a timeout from its last checkpoint (main.py
+# --resume; dendrites allowed, but it must have been saved in a neuron phase), in the same log
+# directory. W&B gets a new run, <run name>_cont<job id>, with the original run's history up to
+# the checkpoint copied in. Pass the original ARM/PAI_MODE/DENDRITE_LOSS/AMP/MAX_DENDRITES too:
+#   sbatch --export=ALL,DENDRITE_LOSS=covariance,CONTINUE_RUN=vit_tiny_pai_resume_11_..._1419 \
+#       scripts/delta_pai_resume.sbatch
 
 set -euo pipefail
 umask 002
@@ -62,13 +68,37 @@ esac
 PRECISION=(--tf32)
 PREC_TAG=fp32
 if [ "${AMP:-0}" = 1 ]; then PRECISION=(--amp); PREC_TAG=amp; fi
-RUN_NAME="vit_tiny_pai_resume_${ARM}_${PAI_TARGET}_${PAI_MODE}${LOSS_TAG}_${PREC_TAG}_20pct_$(date +%Y%m%d_%H%M)"
+RUN_PREFIX="vit_tiny_pai_resume_${ARM}_${PAI_TARGET}_${PAI_MODE}${LOSS_TAG}_${PREC_TAG}_20pct_"
+if [ -n "${CONTINUE_RUN:-}" ]; then
+    case "$CONTINUE_RUN" in
+        "$RUN_PREFIX"*) ;;
+        *) echo "CONTINUE_RUN=$CONTINUE_RUN does not match these settings ($RUN_PREFIX*)" >&2; exit 1 ;;
+    esac
+    RUN_NAME=$CONTINUE_RUN
+    CKPT_DIR=$LOG_ROOT/$RUN_NAME/checkpoints
+    # The continued run overwrites checkpoint.pth.tar at its first validation; keep the start point.
+    CONTINUE_FROM=$CKPT_DIR/continue_job${SLURM_JOB_ID}.pth.tar
+    cp "$CKPT_DIR/checkpoint.pth.tar" "$CONTINUE_FROM"
+    STEP=$("$REPO/.venv/bin/python" -c "import sys, torch; print(torch.load(sys.argv[1], map_location='cpu', weights_only=True)['step'])" "$CONTINUE_FROM")
+    WANDB_RUN=${RUN_NAME}_cont${SLURM_JOB_ID}
+    echo "Continuing $RUN_NAME from step $STEP as W&B run $WANDB_RUN"
+    START_ARGS=(--resume "$CONTINUE_FROM" --wandb-name "$WANDB_RUN" --wandb-history-from "$RUN_NAME")
+    # Own W&B dir: the original's wandb-resume.json (left by the timeout) would make
+    # resume='auto' reach for the old run.
+    WANDB_DIR=$LOG_ROOT/$RUN_NAME/$WANDB_RUN
+else
+    RUN_NAME="${RUN_PREFIX}$(date +%Y%m%d_%H%M)"
+    START_ARGS=(--pai-resume "$RESUME" --wandb-history-from "$SRC_RUN")
+    WANDB_DIR=$LOG_ROOT/$RUN_NAME
+fi
 
 source "$PROJECT/.pai_env"
 : "${PAIEMAIL:?PAIEMAIL is not set in $PROJECT/.pai_env}"
 : "${PAITOKEN:?PAITOKEN is not set in $PROJECT/.pai_env}"
-test -r "$RESUME"
-test -r "$(dirname "$RESUME")/pai/best_model.pt"   # PAI reloads it at the first switch
+if [ -z "${CONTINUE_RUN:-}" ]; then
+    test -r "$RESUME"
+    test -r "$(dirname "$RESUME")/pai/best_model.pt"   # PAI reloads it at the first switch
+fi
 mkdir -p "$LOG_ROOT"
 
 # Unpack the parquet shards to node-local disk: 1.3M small files would be slow on /projects.
@@ -85,7 +115,7 @@ start=$SECONDS
 "$PROJECT/.venv-data/bin/python" "$REPO/scripts/parquet_to_imagefolder.py" "$PARQUET" "$LOCAL" --workers "$SLURM_CPUS_PER_TASK"
 echo "Unpacked in $((SECONDS - start)) s"
 
-export WANDB_DIR="$LOG_ROOT/$RUN_NAME"
+export WANDB_DIR
 export WANDB_ENTITY="IdlF26Group40"
 export WANDB_PROJECT="ViT-perforated"
 mkdir -p "$WANDB_DIR"
@@ -110,8 +140,7 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
     --lr 5e-4 \
     --log-steps 500 \
     --workers $((SLURM_CPUS_PER_TASK - 2)) \
-    --pai-resume "$RESUME" \
-    --wandb-history-from "$SRC_RUN" \
+    "${START_ARGS[@]}" \
     "${PAI_ARGS[@]}" \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
     --pai-target "$PAI_TARGET" \
