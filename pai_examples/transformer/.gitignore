@@ -1,0 +1,6 @@
+# Outputs the example writes to the current directory, in case it is run from here.
+dendritic_*/
+vanilla_*/
+best_*_model.pt
+wandb/
+runs/

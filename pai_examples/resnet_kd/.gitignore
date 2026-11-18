@@ -1,0 +1,7 @@
+# Outputs the example writes to the current directory, in case it is run from here.
+runs/
+Datasets/
+food101_*/
+cifar100_*/
+imagenet_*/
+wandb/

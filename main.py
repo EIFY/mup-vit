@@ -2,7 +2,6 @@
 
 import argparse
 import builtins
-import functools
 import math
 import os
 import random
@@ -118,7 +117,9 @@ parser.add_argument("--randaug-magnitude", default=10, type=int)
 parser.add_argument('-p', '--print-freq', default=100, type=int,
                     metavar='N', help='print frequency (default: 100)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
+                    help='path to latest checkpoint (default: none). For PAI runs: this run\'s own '
+                         'checkpoint from a neuron phase (dendrites allowed); keep --name and the '
+                         'PAI flags of the original run to continue its log directory')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--world-size', default=-1, type=int,
@@ -141,6 +142,8 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 parser.add_argument('--fake-data', action='store_true', help="use fake data to benchmark")
 parser.add_argument('--amp', action='store_true',
                     help='Use CUDA FP16 automatic mixed precision (default: FP32)')
+parser.add_argument('--tf32', action='store_true',
+                    help='allow TF32 tensor cores for FP32 matmuls and convolutions (Ampere and newer)')
 parser.add_argument('--max-steps', type=int, default=None,
                     help='Limit training batches in this invocation without shortening the LR schedule')
 parser.add_argument("--logs", default="./logs/", type=str,
@@ -150,14 +153,48 @@ parser.add_argument('--name', default=None, type=str,
                          'Otherwise use current time.')
 parser.add_argument("--report-to", default='', type=str,
                     help="Options are ['wandb']")
+parser.add_argument("--wandb-history-from", default='', type=str, metavar='RUN_ID',
+                    help="W&B run (same entity/project) whose logged scalars up to the resume step "
+                         "are copied into this run first, e.g. the run a --pai-resume checkpoint "
+                         "came from. W&B's own run forking is a private preview feature.")
+parser.add_argument("--wandb-name", default='', type=str, metavar='RUN_ID',
+                    help="W&B run name and id (default: --name). With --resume and "
+                         "--wandb-history-from, continues a run's log directory under a new W&B run.")
 parser.add_argument("--wandb-notes", default='', type=str,
                     help="Notes if logging with wandb")
 pai_setup.add_arguments(parser)
 best_acc1 = 0
 
 
-def collate(batch, mixup):
-    return mixup(*torch.utils.data.default_collate(batch))
+def copy_wandb_history(run_id, last_step):
+    """Copy the scalars run_id logged up to last_step into the current W&B run.
+
+    Stands in for W&B run forking, which is a private preview feature: charts of a resumed run
+    then start at step 0. Media (e.g. PAI plots) are not copied; PAI's own plots already
+    include the restored history.
+    """
+    source = wandb.Api(timeout=120).run(f"{wandb.run.entity}/{wandb.run.project}/{run_id}")
+    rows = 0
+    for row in source.scan_history(page_size=1000):
+        step = row.get('_step')
+        if step is None or step > last_step:
+            continue
+        data = {k: v for k, v in row.items()
+                if not k.startswith('_') and v is not None and not isinstance(v, dict)}
+        if data:
+            wandb.log(data, step=step)
+            rows += 1
+    print(f"=> copied {rows} W&B history rows (steps <= {last_step}) from run '{run_id}'")
+
+
+def normalize(images):
+    """uint8 [0, 255] -> float32 [-1, 1]: ToDtype(scale=True) followed by Normalize(0.5, 0.5).
+
+    Loader workers ship uint8 images, a quarter of the host memory of float32 batches, and
+    the conversion runs on the device. MixUp is linear and its weights sum to 1, so mixing
+    after normalizing gives the same result as mixing normalized images in the workers.
+    """
+    return images.float().div_(255).sub_(0.5).div_(0.5)
 
 
 def chunk(n, device, *tensors):
@@ -174,6 +211,10 @@ def main():
         parser.error('--train-fraction must be in (0, 1]')
     if args.max_steps is not None and args.max_steps <= 0:
         parser.error('--max-steps must be positive')
+    if args.tf32:
+        # PyTorch keeps TF32 off for matmuls by default; 'high' allows it (FP32 range, ~10-bit mantissa).
+        torch.set_float32_matmul_precision('high')
+        torch.backends.cudnn.allow_tf32 = True
     if args.amp and not torch.cuda.is_available():
         parser.error('--amp requires a CUDA GPU')
 
@@ -214,7 +255,12 @@ def main():
         # PAI runs change into the log directory, so later paths must not depend on the cwd.
         args.data = os.path.abspath(args.data)
         args.logs = os.path.abspath(args.logs)
-        args.pai_init = os.path.abspath(args.pai_init)
+        if args.pai_init:
+            args.pai_init = os.path.abspath(args.pai_init)
+        if args.pai_resume:
+            args.pai_resume = os.path.abspath(args.pai_resume)
+        if args.resume:
+            args.resume = os.path.abspath(args.resume)
 
     # get the name of the experiments
     if args.name is None:
@@ -289,11 +335,22 @@ def main_worker(gpu, args):
         pool_type=args.pool_type,
         register=args.register,
     )
+    pai_resume = None
     if args.pai:
-        pai_setup.load_init(model, args.pai_init)
+        if args.pai_init:
+            pai_setup.load_init(model, args.pai_init)
+        if args.pai_resume:
+            pai_resume = pai_setup.load_resume(model, args.pai_resume)
         # PAI writes its graphs, CSVs and saves to ./pai.
         os.chdir(args.log_dir)
         original_model = model = pai_setup.perforate(model, args)
+        if args.pai_resume:
+            pai_setup.restore_tracker(model, pai_resume, args)
+        elif args.resume:
+            # Continue this PAI run (dendrites included) from its own checkpoint.
+            model, pai_resume = pai_setup.load_continue(model, args.resume, args)
+            original_model = model
+            best_acc1 = pai_resume['best_acc1']
 
     wd_params = [p for n, p in model.named_parameters() if weight_decay_param(n, p) and p.requires_grad]
     non_wd_params = [p for n, p in model.named_parameters() if not weight_decay_param(n, p) and p.requires_grad]
@@ -341,17 +398,11 @@ def main_worker(gpu, args):
     if args.fake_data:
         print("=> Fake data is used!")
         input_shape = (3, args.input_resolution, args.input_resolution)
-        transform = v2.Compose([
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-        ])
+        # uint8 images; normalize() converts them on the device.
+        transform = v2.ToImage()
         train_dataset = datasets.FakeData(1281167, input_shape, 1000, transform)
         val_dataset = datasets.FakeData(50000, input_shape, 1000, transform)
     else:
-        value_range = v2.Normalize(
-            mean=[0.5] * 3,
-            std=[0.5] * 3)
-
         cutout_const = 40
         translate_const = 100
         MAX_LEVEL = 10
@@ -391,10 +442,7 @@ def main_worker(gpu, args):
         ]
         if args.randaug:
             transform.append(randaug)
-        transform.extend([
-            v2.ToDtype(torch.float32, scale=True),
-            value_range
-        ])
+        # Workers return uint8 images; normalize() converts them on the device.
 
         train_dataset = datasets.ImageFolder(
             os.path.join(args.data, 'train'),
@@ -406,8 +454,6 @@ def main_worker(gpu, args):
                 v2.ToImage(),
                 v2.Resize(256),
                 v2.CenterCrop(args.input_resolution),
-                v2.ToDtype(torch.float32, scale=True),
-                value_range,
             ]))
 
     if args.train_fraction < 1:
@@ -452,13 +498,10 @@ def main_worker(gpu, args):
         train_sampler = None
         val_sampler = None
 
-    mixup = TwoHotMixUp(alpha=args.mixup_alpha, prefetch_factor=args.prefetch_factor, batch_size=args.batch_size)
-    collate_fn = functools.partial(collate, mixup=mixup)
-
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.prefetch_factor * args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler,
-        collate_fn=collate_fn, drop_last=True, multiprocessing_context='spawn',
+        drop_last=True, multiprocessing_context='spawn',
         prefetch_factor=1, persistent_workers=True)
 
     val_loader = torch.utils.data.DataLoader(
@@ -473,9 +516,11 @@ def main_worker(gpu, args):
             scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], [args.warmup])
 
     scaler = torch.amp.GradScaler('cuda', enabled=args.amp)
+    if pai_resume is not None:
+        pai_setup.restore_training(optimizer, scheduler, scaler, pai_resume, args)
 
-    # optionally resume from a checkpoint
-    if args.resume:
+    # optionally resume from a checkpoint (PAI runs resume above)
+    if args.resume and not args.pai:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
@@ -500,8 +545,8 @@ def main_worker(gpu, args):
             wandb.login(key=wandb_token)
         wandb.init(
             project=os.environ.get('WANDB_PROJECT'),
-            name=args.name,
-            id=args.name,
+            name=args.wandb_name or args.name,
+            id=args.wandb_name or args.name,
             notes=args.wandb_notes,
             tags=[],
             resume='auto',
@@ -509,6 +554,8 @@ def main_worker(gpu, args):
         )
         params_file = os.path.join(args.logs, args.name, "params.txt")
         wandb.save(params_file)
+        if args.wandb_history_from and args.start_step:
+            copy_wandb_history(args.wandb_history_from, args.start_step)
 
     # PAI replaces modules when it adds dendrites, so PAI runs stay uncompiled.
     if not args.pai:
@@ -554,17 +601,21 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     # switch to train mode
     model.train()
     end = time.time()
-    best_acc1 = 0
-    # generator moves data to the same device as model
-    gen = (
-        (images, lam, target1, target2) for (img, lam, trt1, trt2) in infinite_loader(train_loader, train_sampler) for images, target1, target2 in zip(
-            img.to(device, non_blocking=True),
-            trt1.to(device, non_blocking=True),
-            trt2.to(device, non_blocking=True))
-    )
+    global best_acc1  # restored by --resume; a fresh run starts at 0
+    mixup = TwoHotMixUp(alpha=args.mixup_alpha, prefetch_factor=args.prefetch_factor, batch_size=args.batch_size)
+
+    def train_batches():
+        # Move uint8 batches to the device, then normalize and mix up there.
+        for img, target in infinite_loader(train_loader, train_sampler):
+            img = normalize(img.to(device, non_blocking=True))
+            img, lam, trt1, trt2 = mixup(img, target.to(device, non_blocking=True))
+            yield from ((images, lam, target1, target2) for images, target1, target2 in zip(img, trt1, trt2))
+
+    gen = train_batches()
 
     if args.pai:
         pai_images = PAIImages(args.log_dir)
+    if args.pai and args.pai_init:
         if not args.pai_control:
             # PAI records tensor shapes on the first training backward pass and cannot switch
             # without one. Run one microbatch with no optimizer step.
@@ -586,11 +637,20 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         if args.wandb and is_primary(args):
             wandb.log({**pai_setup.stats(), **image_data}, step=start_step)
 
+    # PAI sizes its dendrite buffers on the first training backward pass, so a resumed run writes
+    # the source run's best model (which PAI reloads at a switch) after its first step.
+    best_model_pending = args.pai and bool(args.pai_resume)
     for step, (images, lam, target1, target2) in zip(range(start_step + 1, total_steps + 1), gen):
         # measure data loading time
         data_time.update(time.time() - end)
+        if args.pai:
+            pai_setup.DIAG['step'] = step
+        if args.pai and step <= args.pai_warmup:
+            pai_setup.warmup_lr(optimizer, args, step)
         step_loss = 0.0
         step_correct = 0.0
+        # The phase only changes at validations, so it is fixed for the whole step.
+        dendrite_phase = args.pai and pai_setup.in_dendrite_phase()
 
         for img, trt1, trt2 in chunk(args.accum_freq, device, images, target1, target2):
             # compute output
@@ -606,7 +666,12 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                 interval_correct += batch_correct
 
             # compute gradient
-            scaler.scale(loss / args.accum_freq).backward()
+            if dendrite_phase:
+                # PAI's documented AMP pattern: a plain, unscaled backward in dendrite ('p')
+                # phases. PAI's dendrite correlation learning is not invariant to the loss scale.
+                (loss / args.accum_freq).backward()
+            else:
+                scaler.scale(loss / args.accum_freq).backward()
 
         step_loss /= args.accum_freq
         losses.update(step_loss, images.size(0))
@@ -614,13 +679,19 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
         interval_loss_sum += step_loss * images.size(0)
         interval_samples += images.size(0)
 
-        if args.pai and pai_setup.in_dendrite_phase():
+        if dendrite_phase:
             # PAI computes dendrite gradients inside optimizer.step() from the errors recorded
-            # during backward, so GradScaler has nothing to unscale, clip or inf-check. The
-            # gradients carry the constant loss scale, which AdamW's update is invariant to.
+            # during the (unscaled) backward, so GradScaler is bypassed as PAI documents. Without
+            # loss scaling fp16 should not overflow; if it ever does, skip the update rather
+            # than let a non-finite error signal turn the candidate dendrite weights into NaN.
             l2_grads = torch.zeros((), device=device)
-            optimizer.step()
-            optimizer_updated = True
+            if pai_setup.dendrite_grads_overflowed():
+                optimizer_updated = False
+                pai_setup.DIAG['last_scale_drop_step'] = step
+                print(f"=> non-finite gradient in dendrite step {step}: skipped the update")
+            else:
+                optimizer.step()
+                optimizer_updated = True
         else:
             # Unscale only after all microbatches have accumulated, before clipping.
             scaler.unscale_(optimizer)
@@ -629,7 +700,15 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
             scaler.step(optimizer)
             scaler.update()
             optimizer_updated = scaler.get_scale() >= previous_scale
+            if args.pai:
+                pai_setup.DIAG['scale'] = previous_scale
+                if not optimizer_updated:
+                    # fp16 overflow in this backward: GradScaler skipped the step and backed off.
+                    pai_setup.DIAG['last_scale_drop_step'] = step
         optimizer.zero_grad()
+        if best_model_pending:
+            pai_setup.write_best_model(original_model, args)
+            best_model_pending = False
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -732,7 +811,7 @@ def validate(val_loader, model, step, device, args):
                 for img, trt in chunk(args.accum_freq, device, images, target):
                     # compute output
                     with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=args.amp):
-                        output, loss = model(img, 1.0, trt, trt)
+                        output, loss = model(normalize(img), 1.0, trt, trt)
 
                     # measure accuracy and record loss
                     acc1, acc5 = accuracy(output, trt, topk=(1, 5))
