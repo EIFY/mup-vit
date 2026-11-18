@@ -322,6 +322,27 @@ def load_continue(model, path, args):
     return model, checkpoint
 
 
+def resize_module_lists(string, modules):
+    """Resize a tracker string's per-module lists (best_scores, current_scores) to `modules`.
+
+    The tracker stores one line per perforated module, then 'end'. A --pai-resume source may
+    have perforated a different number of modules (e.g. layer 11 only, for a layers-6..11 arm).
+    Before the first switch every list is empty, so they can be resized; otherwise PAI indexes
+    past the end when it plots at the first switch.
+    """
+    lines = string.split('\n')
+    for name in ('best_scores', 'current_scores'):
+        start = lines.index(name + ',') + 1
+        end = lines.index('end', start)
+        if end - start == modules:
+            continue
+        if any(lines[start:end]):
+            raise ValueError(f"tracker has {name} for {end - start} perforated modules and this run "
+                             f"has {modules}; only empty ones (before the first switch) can be resized")
+        lines[start:end] = [''] * modules
+    return '\n'.join(lines)
+
+
 def restore_tracker(model, checkpoint, args):
     """Restore PAI's tracker from the checkpoint, after perforate().
 
@@ -331,7 +352,7 @@ def restore_tracker(model, checkpoint, args):
     """
     tracker = GPA.pai_tracker
     tracker.reset_module_vector(model, False)
-    tracker.from_string(tracker_string(checkpoint))
+    tracker.from_string(resize_module_lists(tracker_string(checkpoint), len(tracker.neuron_module_vector)))
     # Run identity comes from this run's flags, not the source run (e.g. a control arm).
     tracker.member_vars['doing_pai'] = not args.pai_control
     if getattr(args, 'pai_fixed_switch', None):
@@ -391,7 +412,8 @@ def write_best_model(model, args):
         state[key] = best[name].clone()
         copied += 1
     # PAI also reloads the tracker stored in best_model.pt at a switch; give it this run's identity.
-    string = ''.join(map(chr, source['tracker_string'].tolist()))
+    string = resize_module_lists(''.join(map(chr, source['tracker_string'].tolist())),
+                                 len(GPA.pai_tracker.neuron_module_vector))
     run_settings = {'doing_pai': str(not args.pai_control)}
     if getattr(args, 'pai_fixed_switch', None):
         run_settings['switch_mode'] = str(GPA.pc.DOING_FIXED_SWITCH)
