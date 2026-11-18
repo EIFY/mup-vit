@@ -10,11 +10,13 @@
 #SBATCH --output=/projects/bjto/lhann/runs/slurm-%j.out
 
 # Continue a from-scratch PAI run's neuron phase from a pre-switch checkpoint (--pai-resume) on
-# one Delta GPU, with dendrites on encoder layer ARM. Default: the shared step-61000 snapshot of
+# one Delta GPU, with dendrites on encoder layer(s) ARM. Default: the shared step-61000 snapshot of
 # vit_tiny_pai_scratch_11_20pct_20261111_0433, the starting point of the AWS resume-* runs.
-#   sbatch scripts/delta_pai_resume.sbatch                      # layer 11, ln_mlp, FP32 + TF32
-#   sbatch --export=ALL,ARM=7 scripts/delta_pai_resume.sbatch   # another layer
-#   sbatch --export=ALL,ARM=control scripts/delta_pai_resume.sbatch
+#   sbatch scripts/delta_pai_resume.sbatch                       # layer 11, ln_mlp, FP32 + TF32
+#   sbatch --export=ALL,ARM=7 scripts/delta_pai_resume.sbatch    # another layer
+#   sbatch --export=ALL,ARM=6-11 scripts/delta_pai_resume.sbatch # layers 6..11 (a range, inclusive)
+#   sbatch --export=ALL,ARM=control scripts/delta_pai_resume.sbatch          # layer 11, no dendrites
+#   sbatch --export=ALL,ARM=6-11,CONTROL=1 scripts/delta_pai_resume.sbatch   # layers 6..11, no dendrites
 # Precision: FP32 with TF32 tensor cores by default (no fp16 AMP); AMP=1 restores --amp.
 # PAI_MODE: pb (default, Perforated Backpropagation / cascade correlation) or gd (dendrites trained
 # by gradient descent with the neurons, PAI's open-source mode).
@@ -24,7 +26,7 @@
 # CONTINUE_RUN=<run name>: continue that run after a timeout from its last checkpoint (main.py
 # --resume; dendrites allowed, but it must have been saved in a neuron phase), in the same log
 # directory. W&B gets a new run, <run name>_cont<job id>, with the original run's history up to
-# the checkpoint copied in. Pass the original ARM/PAI_MODE/DENDRITE_LOSS/AMP/MAX_DENDRITES too:
+# the checkpoint copied in. Pass the original ARM/CONTROL/PAI_MODE/DENDRITE_LOSS/AMP/MAX_DENDRITES too:
 #   sbatch --export=ALL,DENDRITE_LOSS=covariance,CONTINUE_RUN=vit_tiny_pai_resume_11_..._1419 \
 #       scripts/delta_pai_resume.sbatch
 
@@ -47,10 +49,24 @@ SRC_DIR=${RESUME%%/archive/*}
 [ "$SRC_DIR" = "$RESUME" ] && SRC_DIR=${RESUME%%/checkpoints/*}
 SRC_RUN=$(basename "$SRC_DIR")
 
+# ARM: one layer (11), an inclusive range (6-11), or control (= layer 11 with CONTROL=1).
+CONTROL=${CONTROL:-0}
+ARM_TAG=$ARM
 if [ "$ARM" = control ]; then
-    PAI_ARGS=(--pai-layers 11 --pai-control)
+    LAYERS=(11)
+    CONTROL=1
+elif [[ $ARM =~ ^([0-9]+)-([0-9]+)$ ]]; then
+    LAYERS=($(seq "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"))
+    [ ${#LAYERS[@]} -gt 0 ] || { echo "ARM=$ARM is an empty range" >&2; exit 1; }
+elif [[ $ARM =~ ^[0-9]+$ ]]; then
+    LAYERS=("$ARM")
 else
-    PAI_ARGS=(--pai-layers "$ARM")
+    echo "ARM must be a layer (11), a range (6-11) or control" >&2; exit 1
+fi
+PAI_ARGS=(--pai-layers "${LAYERS[@]}")
+if [ "$CONTROL" = 1 ]; then
+    PAI_ARGS+=(--pai-control)
+    [ "$ARM" = control ] || ARM_TAG=${ARM}_control
 fi
 PAI_MODE=${PAI_MODE:-pb}
 MODE_ARGS=()
@@ -68,7 +84,7 @@ esac
 PRECISION=(--tf32)
 PREC_TAG=fp32
 if [ "${AMP:-0}" = 1 ]; then PRECISION=(--amp); PREC_TAG=amp; fi
-RUN_PREFIX="vit_tiny_pai_resume_${ARM}_${PAI_TARGET}_${PAI_MODE}${LOSS_TAG}_${PREC_TAG}_20pct_"
+RUN_PREFIX="vit_tiny_pai_resume_${ARM_TAG}_${PAI_TARGET}_${PAI_MODE}${LOSS_TAG}_${PREC_TAG}_20pct_"
 if [ -n "${CONTINUE_RUN:-}" ]; then
     case "$CONTINUE_RUN" in
         "$RUN_PREFIX"*) ;;
