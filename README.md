@@ -1,3 +1,43 @@
+## Setting up a machine (RTX 3090/4090, L40S, NCSA Delta)
+
+`scripts/setup_machine.sh` installs uv, builds the venvs (`.venv` for training, `.venv-data` with
+pyarrow for unpacking), checks your keys, downloads ImageNet-1k as parquet shards (~22 GB) and,
+if a GPU is visible, runs a smoke test: GPU, keys, perforation, one Perforated Backpropagation
+dendrite epoch whose candidate correlation scores must register (they stayed 0 with
+perforatedai 4.0.0), and a 30-step PAI run. It starts no training run. Finished steps are skipped,
+so you can re-run it at any time.
+
+**1. Keys.** Put them in `.env` in the repo root. This file is git-ignored, so each machine needs
+its own copy, e.g. `scp .env <host>:<path>/ViT-perforated/`. Never put keys in `.env.example`.
+```bash
+cp .env.example .env && chmod 600 .env   # then fill in WANDB_API_TOKEN, PAIEMAIL, PAITOKEN
+```
+
+**2. Run setup.**
+```bash
+UNPACK=1 ./scripts/setup_machine.sh       # RTX 3090 / 4090: download and unpack
+./scripts/setup_machine.sh                # L40S cluster: on the login node
+PARQUET_DIR=/projects/bjto/shared/imagenet_1k_resized_256/data \
+    nice -n 19 ./scripts/setup_machine.sh # Delta: on the login node, reuses the shared shards
+```
+The data goes next to the repo, in its parent directory: the shards in
+`../imagenet_1k_resized_256/data`, and with `UNPACK=1` the images in `../imagenet`. Set
+`DATA_DIR=/other/path` to put both somewhere else.
+
+On a cluster, leave out `UNPACK=1`: each job should unpack the shards to node-local disk itself,
+as `scripts/delta_pai_resume.sbatch` does:
+```bash
+.venv-data/bin/python scripts/parquet_to_imagefolder.py <parquet dir> "$LOCAL" --workers "$SLURM_CPUS_PER_TASK"
+```
+Login nodes have no GPU, so setup skips the smoke test there. To run it, start the script again
+in a GPU job, e.g. `srun -p <partition> -A <account> --gpus=1 --time=1:00:00 --pty ./scripts/setup_machine.sh`.
+More options (`IMAGENET`, `DATA_VENV`, `DOWNLOAD_DATA=0`, `SKIP_SMOKE=1`, ...) are listed in the
+script's header.
+
+PAI runs refuse to start when more than one GPU is visible, even with `--gpu 0`. On a
+multi-GPU machine, pick one for training, e.g. `CUDA_VISIBLE_DEVICES=2 .venv/bin/python main.py ...`
+(`nvidia-smi` shows which are free). The smoke test picks the GPU with the most free memory itself.
+
 The `main` branch of this repository aims to reproduce [Better plain ViT baselines for ImageNet-1k](https://arxiv.org/abs/2205.01580) in pytorch,
 in particular the 76.7% top-1 validation set accuracy of the Head: MLP → linear variant after 90 epochs. This variant is no inferior than the default,
 and personally [I have better experience with simpler prediction head](https://iclr-blogposts.github.io/2024/blog/alibi-mlm/). The changes I have made
