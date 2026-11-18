@@ -13,6 +13,7 @@ import json
 import os
 import pdb
 import re
+import shutil
 import time
 
 import torch
@@ -432,6 +433,26 @@ def write_best_model(model, args):
     print(f"=> wrote pai/best_model.pt from '{resume_best_model_path(args.pai_resume)}': {copied} "
           f"weights, best epoch {tracker_value(string, 'num_epochs_run')} "
           f"(score {float(tracker_value(string, 'current_best_validation_score')):.3f})")
+
+
+def archive_pre_switch(args):
+    """Keep the run's latest pre-switch state in <run>/archive/pre_switch/, for --pai-resume.
+
+    Call after each validation's checkpoint save. While PAI is still in its first neuron phase
+    (mode 'n', no dendrites), copy checkpoints/checkpoint.pth.tar and pai/best_model.pt (which
+    PAI reloads at a switch) into the archive; from the first switch on, leave it alone, so it
+    holds the last neuron-only state. Both files are replaced atomically.
+    """
+    member_vars = GPA.pai_tracker.member_vars
+    if member_vars.get('mode') != 'n' or member_vars.get('num_dendrites_added', 0):
+        return
+    dest = os.path.join(args.log_dir, 'archive', 'pre_switch')
+    os.makedirs(os.path.join(dest, 'pai'), exist_ok=True)
+    for src, dst in ((os.path.join(args.log_dir, 'pai', 'best_model.pt'), os.path.join(dest, 'pai', 'best_model.pt')),
+                     (os.path.join(args.checkpoint_path, 'checkpoint.pth.tar'), os.path.join(dest, 'checkpoint.pth.tar'))):
+        if os.path.isfile(src):
+            shutil.copyfile(src, dst + '.tmp')
+            os.replace(dst + '.tmp', dst)
 
 
 def restore_training(optimizer, scheduler, scaler, checkpoint, args):

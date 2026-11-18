@@ -790,6 +790,8 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                     'scaler': scaler.state_dict(),
                 }
                 save_checkpoint(ckpt, is_best, args.checkpoint_path, step=step if step in args.specified_steps else None)
+                if args.pai:
+                    pai_setup.archive_pre_switch(args)
 
             if training_complete:
                 print(f"=> PAI reports training complete at step {step}")
