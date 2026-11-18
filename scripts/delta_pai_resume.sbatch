@@ -23,6 +23,11 @@
 # DENDRITE_LOSS=covariance (pb only): perforatedbp's CovarianceDendriteLoss instead of 4.0.0's
 # default, whose PB scores are always 0; adds _covloss to the run name.
 # EPOCHS is the total including the shared epochs and only a safety cap; PAI ends the run.
+# SCRATCH=1: train from random initialization instead of branching from RESUME, with a linear LR
+# warmup over PAI_WARMUP steps (default 4000). The run is named vit_tiny_pai_scratch_<ARM>_...
+# and keeps its last pre-switch state in <run>/archive/pre_switch/, which later arms can branch
+# from with RESUME=<run dir>/archive/pre_switch/checkpoint.pth.tar. Pass SCRATCH=1 with
+# CONTINUE_RUN too.
 # CONTINUE_RUN=<run name>: continue that run after a timeout from its last checkpoint (main.py
 # --resume; dendrites allowed, but it must have been saved in a neuron phase), in the same log
 # directory. W&B gets a new run, <run name>_cont<job id>, with the original run's history up to
@@ -84,7 +89,10 @@ esac
 PRECISION=(--tf32)
 PREC_TAG=fp32
 if [ "${AMP:-0}" = 1 ]; then PRECISION=(--amp); PREC_TAG=amp; fi
-RUN_PREFIX="vit_tiny_pai_resume_${ARM_TAG}_${PAI_TARGET}_${PAI_MODE}${LOSS_TAG}_${PREC_TAG}_20pct_"
+SCRATCH=${SCRATCH:-0}
+KIND=resume
+[ "$SCRATCH" = 1 ] && KIND=scratch
+RUN_PREFIX="vit_tiny_pai_${KIND}_${ARM_TAG}_${PAI_TARGET}_${PAI_MODE}${LOSS_TAG}_${PREC_TAG}_20pct_"
 if [ -n "${CONTINUE_RUN:-}" ]; then
     case "$CONTINUE_RUN" in
         "$RUN_PREFIX"*) ;;
@@ -104,14 +112,18 @@ if [ -n "${CONTINUE_RUN:-}" ]; then
     WANDB_DIR=$LOG_ROOT/$RUN_NAME/$WANDB_RUN
 else
     RUN_NAME="${RUN_PREFIX}$(date +%Y%m%d_%H%M)"
-    START_ARGS=(--pai-resume "$RESUME" --wandb-history-from "$SRC_RUN")
+    if [ "$SCRATCH" = 1 ]; then
+        START_ARGS=(--pai-warmup "${PAI_WARMUP:-4000}")
+    else
+        START_ARGS=(--pai-resume "$RESUME" --wandb-history-from "$SRC_RUN")
+    fi
     WANDB_DIR=$LOG_ROOT/$RUN_NAME
 fi
 
 source "$PROJECT/.pai_env"
 : "${PAIEMAIL:?PAIEMAIL is not set in $PROJECT/.pai_env}"
 : "${PAITOKEN:?PAITOKEN is not set in $PROJECT/.pai_env}"
-if [ -z "${CONTINUE_RUN:-}" ]; then
+if [ -z "${CONTINUE_RUN:-}" ] && [ "$SCRATCH" != 1 ]; then
     test -r "$RESUME"
     test -r "$(dirname "$RESUME")/pai/best_model.pt"   # PAI reloads it at the first switch
 fi
