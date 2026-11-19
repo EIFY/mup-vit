@@ -539,12 +539,23 @@ def perforate(model, args):
     return model
 
 
+def decays(name, param):
+    """Whether a parameter gets weight decay: main.weight_decay_param's rule (weight matrices)."""
+    return param.ndim >= 2 and name.endswith('weight')
+
+
 def setup_optimizer(model, args):
     # PAI builds the optimizer itself so it can swap to dendrite-only parameters in dendrite
     # phases. PAI steps the scheduler from validation scores; main.py must not step it.
     GPA.pai_tracker.set_optimizer(torch.optim.AdamW)
     GPA.pai_tracker.set_scheduler(torch.optim.lr_scheduler.ReduceLROnPlateau)
-    opt_args = {'params': model.parameters(), 'lr': args.lr, 'betas': (args.beta1, args.beta2),
+    # Weight decay on weight matrices only, as main.py's baseline optimizer does: biases,
+    # LayerNorm gains and the like get none. PAI keeps parameter groups (minus parameters that
+    # do not require grad in the current phase), so this holds in every phase, dendrites included.
+    named = list(model.named_parameters())
+    groups = [{'params': [p for n, p in named if decays(n, p)], 'weight_decay': args.weight_decay},
+              {'params': [p for n, p in named if not decays(n, p)], 'weight_decay': 0.0}]
+    opt_args = {'params': groups, 'lr': args.lr, 'betas': (args.beta1, args.beta2),
                 'weight_decay': args.weight_decay}
     sched_args = {'mode': 'max', 'patience': args.pai_patience}
     return GPA.pai_tracker.setup_optimizer(model, opt_args, sched_args)
