@@ -84,6 +84,8 @@ parser.add_argument('--min-ratio', default=0., type=float,
 parser.add_argument('--nesterov', action='store_true')
 parser.add_argument('--momentum', '--mo', default=0.1, type=float,
                     help='momentum for non-sign parameters')
+parser.add_argument('--alpha', default=0.01, type=float,
+                    help='EMA hyperparameter for grad cosine similarity')
 parser.add_argument('--end-mo-ratio', default=1.0, type=float)
 parser.add_argument('--cautious', action='store_true',
                     help='Cautious weight decay (https://arxiv.org/abs/2510.12402v1)')
@@ -359,13 +361,14 @@ def main_worker(gpu, args):
             'weight_decay': args.hb_wd,
         })
 
-    defaults = dict(lr=args.lr, momentum=args.momentum, nesterov=args.nesterov, cautious=args.cautious)
+    defaults = dict(lr=args.lr, momentum=args.momentum, nesterov=args.nesterov, cautious=args.cautious, alpha=args.alpha)
     optimizer = Scion(optim_groups, defaults, rank=max(0, args.rank), world_size=args.world_size)
     optimizer.init()
 
     for group in optimizer.param_groups:
         if group['corrected']:
-            group['max_lr_eff'] = group['lr'] * lr_factor(group['momentum'], nesterov=group['nesterov'])
+            group['max_lr_eff'] = group['lr_eff'] = group['lr'] * lr_factor(beta1=0, beta2=1 - group['momentum'], nesterov=group['nesterov'])
+            del group['lr']
         else:
             group['max_lr'] = group['lr']
 
@@ -551,7 +554,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
     def scheduler(group, step):
         group['momentum'] = args.momentum * args.end_mo_ratio ** (step / total_steps)
         if group['corrected']:
-            group['lr'] = lr_ratio(step) * group['max_lr_eff'] / lr_factor(group['momentum'], nesterov=group['nesterov'])
+            group['lr_eff'] = lr_ratio(step) * group['max_lr_eff']
         else:
             group['lr'] = lr_ratio(step) * group['max_lr']
 
@@ -595,8 +598,7 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         l2_head_params = sum(p.square().sum().item() for p in head.parameters())
 
                     group = optimizer.param_groups[0]
-                    lr, momentum = group['lr'], group['momentum']
-                    effective_lr = lr * lr_factor(momentum, nesterov=group['nesterov'])
+                    effective_lr = group['lr_eff']
 
                     samples_per_second_per_gpu = args.batch_size / batch_time.val
                     samples_per_second = samples_per_second_per_gpu * args.world_size
@@ -606,7 +608,6 @@ def train(train_loader, train_sampler, val_loader, start_step, total_steps, orig
                         "batch_time": batch_time.val,
                         "samples_per_second": samples_per_second,
                         "samples_per_second_per_gpu": samples_per_second_per_gpu,
-                        "lr": lr,
                         "effective_lr": effective_lr,
                         "l2_grads": l2_grads.item(),
                         "l2_head_grads": math.sqrt(head_grads_sq),
