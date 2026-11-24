@@ -418,7 +418,7 @@ class Scion(torch.optim.Optimizer):
         ... }]
         >>> optimizer = Scion(optim_groups, lr=2**-12, momentum=0.1)
     """
-    state_keys = ('norm', 'singular', 'momentum_buffer', 'prev_grad', 'prev_grad_norm', 'cosine_sim')
+    state_keys = ('norm', 'singular', 'momentum_buffer', 'prev_grad', 'prev_grad_norm', 'cosine_sim', 'alpha_correction')
 
     def __init__(self, params, defaults, rank=0, world_size=1):
         if defaults.get('lr', 1e-3) < 0.0:
@@ -528,13 +528,19 @@ class Scion(torch.optim.Optimizer):
             g_norm = torch.sum(g ** 2) ** 0.5
             cos_sim = torch.sum(state['prev_grad'] * g) / (state['prev_grad_norm'] * g_norm + eps)
             state['cosine_sim'].mul_(1-a).add_(cos_sim, alpha=a)
+            state['alpha_correction'].mul_(1-a)
             state['prev_grad'], state['prev_grad_norm'] = g, g_norm
             momentum = group['momentum']
 
             if group['corrected']:
                 lr_eff = group['lr_eff']
                 wd = lr_eff ** 2 / (2 * group['c_sq'])
-                lr = lr_eff / lr_factor(beta1=torch.clamp(state['cosine_sim'], -1 + eps, 1 - eps), beta2=1 - momentum, nesterov=group['nesterov'])
+                # Analogous to beta correction of AdamW but we only get non-zero cosine sim. estimate >= 2nd step
+                # So we hack state['alpha_correction'] to be 1/(1-a), 1, (1-a), (1-a)**2, ...
+                # So max(a, 1 - state['alpha_correction']) = _, a, a, 1 - (1-a)**2, ...
+                # (If the output layer is zero-initialized then we only get non-zero cosine sim. estimate >= 3rd step, but it's OK. No need to be exact.)
+                beta1 = torch.clamp(state['cosine_sim'], -1 + eps, 1 - eps) / max(a, 1 - state['alpha_correction'])
+                lr = lr_eff / lr_factor(beta1=beta1, beta2=1 - momentum, nesterov=group['nesterov'])
             else:
                 lr = group['lr']
                 wd = lr * group['weight_decay']
@@ -585,6 +591,7 @@ class Scion(torch.optim.Optimizer):
             state['prev_grad'] = torch.zeros_like(p)
             state['prev_grad_norm'] = torch.tensor(0.).to(p)
             state['cosine_sim'] = torch.tensor(0.).to(p)
+            state['alpha_correction'] = torch.tensor(1 / (1 - group['alpha'])).to(p)
         self.sync_params()
 
 
