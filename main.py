@@ -367,7 +367,7 @@ def main_worker(gpu, args):
 
     for group in optimizer.param_groups:
         if group['corrected']:
-            group['max_lr_eff'] = group['lr_eff'] = group['lr'] * lr_factor(beta1=0, beta2=1 - group['momentum'], nesterov=group['nesterov'])
+            group['max_lr_eff'] = group['lr_eff'] = group['lr'] * lr_factor(momentum=group['momentum'], nesterov=group['nesterov'])
             del group['lr']
         else:
             group['max_lr'] = group['lr']
