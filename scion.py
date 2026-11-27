@@ -40,6 +40,14 @@ class Norm(object):
     def singular_cosine_shape(self, w):
         return self.singular_shape(w)[:-2]
 
+    def alpha_correction_shape(self, w):
+        return ()
+
+    prev_grad_norm_shape = cosine_sim_shape = alpha_correction_shape
+
+    def prev_grad_shape(self, w):
+        return w.shape
+
 
 class ColNorm(Norm):
     """
